@@ -1,0 +1,1 @@
+# This utility file should read in a .tflite file and extract the weights and output them in a numpy array?

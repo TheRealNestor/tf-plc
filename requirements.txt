@@ -3,3 +3,4 @@ matplotlib
 tensorflow
 tqdm
 pandas
+flatbuffers
