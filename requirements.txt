@@ -1,6 +1,7 @@
-numpy
+numpy==1.24.3
 matplotlib
-tensorflow
+tensorflow==2.15.0
 tqdm
 pandas
-flatbuffers
+onnx==1.15.0
+tf2onnx==1.16.1
