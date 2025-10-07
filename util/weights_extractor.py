@@ -2,13 +2,14 @@
 
 import tensorflow as tf
 import numpy as np
-
+from pathlib import Path
+import os
 
 # https://stackoverflow.com/questions/59559289/is-there-any-way-to-convert-a-tensorflow-lite-tflite-file-back-to-a-keras-fil/59566157#59566157
 
 
 
-def print_weights(file_path: str):
+def print_weights(file_path: str | os.PathLike):
   interpreter = tf.lite.Interpreter(model_path=file_path)
   all_tensor_details = interpreter.get_tensor_details()
   interpreter.allocate_tensors()
@@ -23,7 +24,7 @@ def print_weights(file_path: str):
 
 
 
-def weights_as_np(file_path: str):
+def weights_as_np(file_path: str | os.PathLike) -> dict[str, np.ndarray]:
   interpreter = tf.lite.Interpreter(model_path=file_path)
   all_tensor_details = interpreter.get_tensor_details()
   interpreter.allocate_tensors()
@@ -43,19 +44,18 @@ def weights_as_np(file_path: str):
 
 
 if __name__ == "__main__":
+  model_dir = Path("models")
+  model_name = Path("temp_sensor_float16.tflite")
+  model_path = model_dir / model_name
+
   # print_weights("models/temp_sensor_float16.tflite")
 
-  weights = weights_as_np("models/temp_sensor_float16.tflite")
-  np.savez("weights.npz", **weights)
+  weights = weights_as_np(model_path)
+  np.savez(model_path.with_suffix(".npz"), **weights)
 
-
-  loaded = np.load("weights.npz")
+  loaded = np.load(model_path.with_suffix(".npz"))
   print(loaded.files)  # See all weight names
-  print(loaded['arith.constant7'])  
-
-
-
-
+  print(loaded['arith.constant7']) 
 
 
 
