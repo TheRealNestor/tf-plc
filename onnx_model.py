@@ -5,7 +5,7 @@
 import onnx
 import numpy as np
 from typing import Dict, List, Tuple, Any
-import os
+from pathlib import Path
 
 class ONNXModel:
     """
@@ -13,14 +13,14 @@ class ONNXModel:
     and model structure for later code generation.
     """
     
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str | Path):
         """
         Initialize the analyzer with an ONNX model.
         
         Args:
-            model_path (str): Path to the ONNX model file
+            model_path: Path to the ONNX model file (string or Path object)
         """
-        self.model_path = model_path
+        self.model_path = Path(model_path)
         self.model = None
         self.graph = None
         self.weights = {}
@@ -36,11 +36,11 @@ class ONNXModel:
             bool: True if successfully loaded, False otherwise
         """
         try:
-            if not os.path.exists(self.model_path):
+            if not self.model_path.exists():
                 print(f"Error: Model file {self.model_path} not found")
                 return False
                 
-            self.model = onnx.load(self.model_path)
+            self.model = onnx.load(str(self.model_path))
             
             onnx.checker.check_model(self.model)
             print(f"Successfully loaded ONNX model: {self.model_path}")
@@ -204,12 +204,12 @@ class ONNXModel:
         print("="*60)
 
 
-def load_and_analyze_onnx_model(model_path: str) -> ONNXModel:
+def load_and_analyze_onnx_model(model_path: str | Path) -> ONNXModel:
     """
     Convenience function to load and analyze an ONNX model.
     
     Args:
-        model_path (str): Path to the ONNX model file
+        model_path: Path to the ONNX model file (string or Path object)
         
     Returns:
         ONNXModel: Loaded ONNX model
@@ -224,14 +224,17 @@ def load_and_analyze_onnx_model(model_path: str) -> ONNXModel:
 
 
 if __name__ == "__main__":
-    models_dir = "models"
-    onnx_models = [f for f in os.listdir(models_dir) if f.endswith('.onnx')]
+    models_dir = Path("models") / "onnx"
+    
+    if not models_dir.exists():
+        raise FileNotFoundError(f"ONNX models directory not found: {models_dir}")
+    
+    onnx_models = list(models_dir.glob("*.onnx"))
 
     if not onnx_models:
-        raise FileNotFoundError("No ONNX models found in the models directory")    
+        raise FileNotFoundError(f"No ONNX models found in {models_dir}")    
 
-    onxx_model = onnx_models[0]
-    model_path = os.path.join(models_dir, onxx_model)
+    model_path = onnx_models[0]
 
     print(f"Found ONNX model: {model_path}")
     
