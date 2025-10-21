@@ -607,7 +607,13 @@ def validate_network_ir(network: NetworkIR) -> List[str]:
 
 
 if __name__ == "__main__":
+    import argparse
     from pathlib import Path
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Convert ONNX model to Structured Text')
+    parser.add_argument('model_name', nargs='?', help='Name of the ONNX model file (without .onnx extension)')
+    args = parser.parse_args()
     
     # Find ONNX model
     models_dir = Path("models") / "onnx"
@@ -622,60 +628,72 @@ if __name__ == "__main__":
     if not onnx_models:
         print(f"No ONNX models found in {models_dir}")
         print("Please convert a TensorFlow model to ONNX first")
+        exit(1)
+    
+    # Select model based on CLI argument or use first one
+    if args.model_name:
+        model_path = models_dir / f"{args.model_name}.onnx"
+        if not model_path.exists():
+            print(f"Error: Model '{args.model_name}.onnx' not found in {models_dir}")
+            print(f"\nAvailable models:")
+            for model in onnx_models:
+                print(f"  - {model.stem}")
+            exit(1)
     else:
         model_path = onnx_models[0]
+        print(f"No model specified, using: {model_path.stem}")
+    
+    # Create output directory for Structured Text files
+    st_output_dir = Path("models") / "structured_text"
+    st_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate output filename
+    model_name = model_path.stem
+    output_path = st_output_dir / f"{model_name}.st"
+    
+    print(f"Converting {model_path} to Structured Text...")
+    
+    try:
+        # Load and analyze
+        from onnx_model import load_and_analyze_onnx_model
+        analyzer = load_and_analyze_onnx_model(model_path)
         
-        # Create output directory for Structured Text files
-        st_output_dir = Path("models") / "structured_text"
-        st_output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate output filename
-        model_name = model_path.stem
-        output_path = st_output_dir / f"{model_name}.st"
-        
-        print(f"Converting {model_path} to Structured Text...")
-        
-        try:
-            # Load and analyze
-            from onnx_model import load_and_analyze_onnx_model
-            analyzer = load_and_analyze_onnx_model(model_path)
+        if analyzer:
+            # Convert to IR
+            print("\nConverting to intermediate representation...")
+            network_ir = onnx_to_ir(analyzer)
+            print(f"Network IR: {network_ir}")
             
-            if analyzer:
-                # Convert to IR
-                print("\nConverting to intermediate representation...")
-                network_ir = onnx_to_ir(analyzer)
-                print(f"Network IR: {network_ir}")
-                
-                # Validate IR
-                errors = validate_network_ir(network_ir)
-                if errors:
-                    print("\nValidation errors:")
-                    for error in errors:
-                        print(f"  - {error}")
-                else:
-                    print("✓ Network IR validated successfully")
-                
-                # Generate code
-                print("\nGenerating Structured Text code...")
-                code = onnx_to_structured_text(analyzer, "NeuralNetworkFB")
-                
-                # Save to file
-                with open(output_path, 'w') as f:
-                    f.write(code)
-                
-                print(f"\n{'='*60}")
-                print("Generated code preview (first 50 lines):")
-                print(f"{'='*60}")
-                lines = code.split('\n')
-                for line in lines[:50]:
-                    print(line)
-                
-                if len(lines) > 50:
-                    print(f"\n... ({len(lines) - 50} more lines)")
-                
-                print(f"\n✓ Code saved to: {output_path}")
+            # Validate IR
+            errors = validate_network_ir(network_ir)
+            if errors:
+                print("\nValidation errors:")
+                for error in errors:
+                    print(f"  - {error}")
+            else:
+                print("✓ Network IR validated successfully")
             
-        except Exception as e:
-            print(f"Error generating Structured Text code: {e}")
-            import traceback
-            traceback.print_exc()
+            # Generate code
+            print("\nGenerating Structured Text code...")
+            code = onnx_to_structured_text(analyzer, "NeuralNetworkFB")
+            
+            # Save to file
+            with open(output_path, 'w') as f:
+                f.write(code)
+            
+            print(f"\n{'='*60}")
+            print("Generated code preview (first 50 lines):")
+            print(f"{'='*60}")
+            lines = code.split('\n')
+            for line in lines[:50]:
+                print(line)
+            
+            if len(lines) > 50:
+                print(f"\n... ({len(lines) - 50} more lines)")
+            
+            print(f"\n✓ Code saved to: {output_path}")
+        
+    except Exception as e:
+        print(f"Error generating Structured Text code: {e}")
+        import traceback
+        traceback.print_exc()

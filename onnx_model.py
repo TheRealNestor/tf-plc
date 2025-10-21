@@ -224,6 +224,13 @@ def load_and_analyze_onnx_model(model_path: str | Path) -> ONNXModel:
 
 
 if __name__ == "__main__":
+    import argparse
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Load and analyze ONNX model')
+    parser.add_argument('model_name', nargs='?', help='Name of the ONNX model file (without .onnx extension)')
+    args = parser.parse_args()
+    
     models_dir = Path("models") / "onnx"
     
     if not models_dir.exists():
@@ -232,11 +239,20 @@ if __name__ == "__main__":
     onnx_models = list(models_dir.glob("*.onnx"))
 
     if not onnx_models:
-        raise FileNotFoundError(f"No ONNX models found in {models_dir}")    
-
-    model_path = onnx_models[0]
-
-    print(f"Found ONNX model: {model_path}")
+        raise FileNotFoundError(f"No ONNX models found in {models_dir}")
+    
+    # Select model based on CLI argument or use first one
+    if args.model_name:
+        model_path = models_dir / f"{args.model_name}.onnx"
+        if not model_path.exists():
+            print(f"Error: Model '{args.model_name}.onnx' not found in {models_dir}")
+            print(f"\nAvailable models:")
+            for model in onnx_models:
+                print(f"  - {model.stem}")
+            exit(1)
+    else:
+        model_path = onnx_models[0]
+        print(f"No model specified, using: {model_path.stem}\n")
     
     analyzer = load_and_analyze_onnx_model(model_path)
     
