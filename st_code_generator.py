@@ -48,30 +48,30 @@ class NetworkIR:
 class STCode:
     """Represents a piece of Structured Text code"""
     lines: Tuple[str, ...]
-    
+
     def __add__(self, other: 'STCode') -> 'STCode':
         """Combine two code blocks"""
         return STCode(self.lines + other.lines)
-    
+
     def indent(self, level: int = 1) -> 'STCode':
         """Return indented version of code"""
         indent_str = "    " * level
         return STCode(tuple(indent_str + line if line else line for line in self.lines))
-    
+
     def to_string(self) -> str:
         """Convert to string"""
         return "\n".join(self.lines)
-    
+
     @staticmethod
     def from_lines(*lines: str) -> 'STCode':
         """Create from individual lines"""
         return STCode(tuple(lines))
-    
+
     @staticmethod
     def empty() -> 'STCode':
         """Create empty code block"""
         return STCode(())
-    
+
     @staticmethod
     def blank_line() -> 'STCode':
         """Create blank line"""
@@ -79,7 +79,7 @@ class STCode:
 
 
 # ============================================================================
-# ONNX to IR Transformation 
+# ONNX to IR Transformation
 # ============================================================================
 
 def parse_layer_activation(layers: List[Dict], start_idx: int) -> Tuple[ActivationType, int]:
@@ -193,6 +193,8 @@ def extract_dense_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarra
                 consumed
             )
         case _:
+            print(f"[WARNING] Unsupported ONNX layer encountered at index {layer_idx}: '{layer['op_type']}'")
+            print(f"         Layer details: {layer}")
             return (None, 1)
 
 
@@ -284,7 +286,7 @@ def generate_var_output(network: NetworkIR) -> STCode:
 def generate_layer_variables(layer: DenseLayer) -> STCode:
     """Generate variable declarations for a single layer."""
     lines = [
-        f"// Layer {layer.layer_id}",
+        f"(* Layer {layer.layer_id} variables *)",
         f"weights_{layer.layer_id} : ARRAY[0..{layer.input_size-1}, 0..{layer.output_size-1}] OF REAL;",
     ]
     
@@ -306,7 +308,7 @@ def generate_var_section(network: NetworkIR) -> STCode:
     has_softmax = any(layer.activation == ActivationType.SOFTMAX for layer in network.layers)
     
     temp_vars_lines = [
-        "// Temporary computation variables",
+        "(* Temporary computation variables *)",
         "i, j : INT;",
         "sum : REAL;",
     ]
@@ -344,7 +346,7 @@ def format_2d_array_init(array: np.ndarray, var_name: str) -> STCode:
 
 def generate_layer_weight_init(layer: DenseLayer) -> STCode:
     """Generate weight initialization for a single layer."""
-    comment = STCode.from_lines(f"// Initialize layer {layer.layer_id} weights")
+    comment = STCode.from_lines(f"(* Initialize layer {layer.layer_id} weights *)")
     
     weight_init = format_2d_array_init(layer.weights, f"weights_{layer.layer_id}")
     
@@ -363,7 +365,7 @@ def generate_weight_initialization(network: NetworkIR) -> STCode:
         init_code = init_code + generate_layer_weight_init(layer) + STCode.blank_line()
     
     header = STCode.from_lines(
-        "// Initialize weights (one-time setup)",
+        "(* Initialize weights (one-time setup) *)",
         "IF NOT initialized THEN"
     )
     footer = STCode.from_lines(
@@ -380,7 +382,7 @@ def generate_activation_code(activation: ActivationType, array_name: str, size: 
     match activation:
         case ActivationType.RELU:
             return STCode.from_lines(
-                "// ReLU activation",
+                "(* ReLU activation *)",
                 f"FOR i := 0 TO {size-1} DO",
                 f"    IF {array_name}[i] > 0.0 THEN",
                 f"        {array_name}[i] := {array_name}[i];",
@@ -392,7 +394,7 @@ def generate_activation_code(activation: ActivationType, array_name: str, size: 
         
         case ActivationType.SIGMOID:
             return STCode.from_lines(
-                "// Sigmoid activation",
+                "(* Sigmoid activation *)",
                 f"FOR i := 0 TO {size-1} DO",
                 f"    {array_name}[i] := 1.0 / (1.0 + EXP(-{array_name}[i]));",
                 "END_FOR;"
@@ -400,7 +402,7 @@ def generate_activation_code(activation: ActivationType, array_name: str, size: 
         
         case ActivationType.TANH:
             return STCode.from_lines(
-                "// Tanh activation",
+                "(* Tanh activation *)",
                 f"FOR i := 0 TO {size-1} DO",
                 f"    {array_name}[i] := (EXP({array_name}[i]) - EXP(-{array_name}[i])) / (EXP({array_name}[i]) + EXP(-{array_name}[i]));",
                 "END_FOR;"
@@ -408,7 +410,7 @@ def generate_activation_code(activation: ActivationType, array_name: str, size: 
         
         case ActivationType.SOFTMAX:
             return STCode.from_lines(
-                "// Softmax activation",
+                "(* Softmax activation *)",
                 f"max_val := {array_name}[0];",
                 f"FOR i := 1 TO {size-1} DO",
                 f"    IF {array_name}[i] > max_val THEN",
@@ -438,7 +440,7 @@ def generate_matmul_code(layer: DenseLayer, input_var: str, output_var: str) -> 
     bias_line = f"{output_var}[j] := sum + bias_{layer.layer_id}[j];" if has_bias else f"{output_var}[j] := sum;"
     
     return STCode.from_lines(
-        f"// Layer {layer.layer_id}: Dense (MatMul + Bias)",
+        f"(* Layer {layer.layer_id}: Dense (MatMul + Bias) *)",
         f"FOR j := 0 TO {layer.output_size-1} DO",
         "    sum := 0.0;",
         f"    FOR i := 0 TO {layer.input_size-1} DO",
@@ -476,7 +478,7 @@ def generate_layer_forward_pass(layer: DenseLayer, input_var: str,
 
 def generate_forward_pass(network: NetworkIR) -> STCode:
     """Generate complete forward pass computation."""
-    header = STCode.from_lines("// Forward pass computation")
+    header = STCode.from_lines("(* Forward pass computation *)")
     
     forward_code = STCode.empty()
     current_input = "input_data"
@@ -507,67 +509,131 @@ def generate_function_block(network: NetworkIR, fb_name: str = "NeuralNetwork") 
     )
 
 
+def generate_program_wrapper(
+    fb_name: str, program_name: str = "prog0", instance_name: str = "nn"
+) -> STCode:
+    """Generate a PROGRAM wrapper that instantiates and calls the function block."""
+    return STCode.from_lines(
+        f"PROGRAM {program_name}",
+        "VAR",
+        f"    {instance_name} : {fb_name};",
+        "END_VAR",
+        "",
+        f"{instance_name}();",
+        "",
+        "END_PROGRAM",
+        "",
+    )
+
+
+def generate_openplc_configuration(
+    program_name: str = "prog0",
+    configuration_name: str = "Config0",
+    resource_name: str = "Res0",
+    task_name: str = "Main",
+    task_interval: str = "T#1000ms",
+    task_priority: int = 0,
+    instance_name: str = "Inst0",
+) -> STCode:
+    """Generate OpenPLC configuration footer (CONFIGURATION / RESOURCE / TASK mapping)."""
+    return STCode.from_lines(
+        f"CONFIGURATION {configuration_name}",
+        "",
+        f"  RESOURCE {resource_name} ON PLC",
+        f"    TASK {task_name}(INTERVAL := {task_interval},PRIORITY := {task_priority});",
+        f"    PROGRAM {instance_name} WITH {task_name} : {program_name};",
+        "  END_RESOURCE",
+        "END_CONFIGURATION",
+        "",
+    )
+
+
 # ============================================================================
 # Main Pipeline
 # ============================================================================
 
-def onnx_to_structured_text(analyzer: ONNXModel, fb_name: str = "NeuralNetwork") -> str:
+
+def onnx_to_structured_text(
+    analyzer: ONNXModel,
+    fb_name: str = "NeuralNetwork",
+    include_program: bool = False,
+    include_openplc_config: bool = False,
+    program_name: str = "prog0",
+    program_instance_name: str = "nn",
+    cfg_instance_name: str = "Inst0",
+) -> str:
     """
     Complete pipeline: ONNX -> IR -> Structured Text.
-    
-    This is a pure function composition:
-    ONNX Model -> NetworkIR -> STCode -> String
-    
-    Args:
-        analyzer: Analyzed ONNX model
-        fb_name: Function block name
-        
-    Returns:
-        Complete Structured Text code as string
+
+    By default this returns only the FUNCTION_BLOCK source. Set include_program
+    and/or include_openplc_config to append a PROGRAM wrapper and OpenPLC configuration.
     """
     network_ir = onnx_to_ir(analyzer)
-    st_code = generate_function_block(network_ir, fb_name)
-    return st_code.to_string()
+    fb_code = generate_function_block(network_ir, fb_name)
+
+    full_code = fb_code
+    if include_program:
+        full_code = full_code + generate_program_wrapper(
+            fb_name, program_name=program_name, instance_name=program_instance_name
+        )
+
+    if include_openplc_config:
+        full_code = full_code + generate_openplc_configuration(
+            program_name=program_name, instance_name=cfg_instance_name
+        )
+
+    return full_code.to_string()
 
 
-def generate_st_from_onnx_file(onnx_path: str, output_path: str = None, 
-                                fb_name: str = "NeuralNetwork") -> str:
+def generate_st_from_onnx_file(
+    onnx_path: str,
+    output_path: str = None,
+    fb_name: str = "NeuralNetwork",
+    include_program: bool = False,
+    include_openplc_config: bool = False,
+    program_name: str = "prog0",
+    program_instance_name: str = "nn",
+    cfg_instance_name: str = "Inst0",
+) -> str:
     """
     Convenience function to generate ST code from ONNX file.
-    
-    Args:
-        onnx_path: Path to ONNX model (string or Path)
-        output_path: Optional path for output .st file. If None, auto-generates in models/structured_text/
-        fb_name: Function block name
-        
-    Returns:
-        Generated Structured Text code
+
+    The function writes the generated ST file. By default it writes only the function block.
+    Use include_program/include_openplc_config to append wrapper/configuration.
     """
     from pathlib import Path
     from onnx_model import load_and_analyze_onnx_model
-    
+
     print("Loading ONNX model...")
     analyzer = load_and_analyze_onnx_model(onnx_path)
-    
+
     if not analyzer:
         raise ValueError("Failed to load ONNX model")
-    
+
     print("\nGenerating Structured Text code (functional approach)...")
-    code = onnx_to_structured_text(analyzer, fb_name)
-    
+    code = onnx_to_structured_text(
+        analyzer,
+        fb_name=fb_name,
+        include_program=include_program,
+        include_openplc_config=include_openplc_config,
+        program_name=program_name,
+        program_instance_name=program_instance_name,
+        cfg_instance_name=cfg_instance_name,
+    )
+
     # Auto-generate output path if not provided
     if output_path is None:
         onnx_path_obj = Path(onnx_path)
         st_output_dir = Path("models") / "structured_text"
         st_output_dir.mkdir(parents=True, exist_ok=True)
         output_path = st_output_dir / f"{onnx_path_obj.stem}.st"
-    
-    with open(output_path, 'w') as f:
+
+    with open(output_path, "w") as f:
         f.write(code)
-    
+
     print(f"Structured Text code generated successfully: {output_path}")
     print(f"Total lines: {len(code.splitlines())}")
-    
+
     return code
 
 
@@ -609,27 +675,32 @@ def validate_network_ir(network: NetworkIR) -> List[str]:
 if __name__ == "__main__":
     import argparse
     from pathlib import Path
-    
+
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Convert ONNX model to Structured Text')
-    parser.add_argument('model_name', nargs='?', help='Name of the ONNX model file (without .onnx extension)')
+    parser = argparse.ArgumentParser(description="Convert ONNX model to Structured Text")
+    parser.add_argument("model_name", nargs="?", help="Name of the ONNX model file (without .onnx extension)")
+    parser.add_argument("--with-program", action="store_true", help="Append PROGRAM wrapper to the generated file")
+    parser.add_argument("--with-config", action="store_true", help="Append OpenPLC CONFIGURATION footer to the generated file")
+    parser.add_argument("--program-name", default="prog0", help="PROGRAM name to use for wrapper/configuration")
+    parser.add_argument("--program-instance", default="nn", help="Instance name for the PROGRAM wrapper (calls the FB)")
+    parser.add_argument("--config-instance", default="Inst0", help="Instance name used in the CONFIGURATION PROGRAM line")
     args = parser.parse_args()
-    
+
     # Find ONNX model
     models_dir = Path("models") / "onnx"
-    
+
     if not models_dir.exists():
         print(f"ONNX models directory not found: {models_dir}")
         print("Please create the directory and convert a TensorFlow model to ONNX first")
         exit(1)
-    
+
     onnx_models = list(models_dir.glob("*.onnx"))
-    
+
     if not onnx_models:
         print(f"No ONNX models found in {models_dir}")
         print("Please convert a TensorFlow model to ONNX first")
         exit(1)
-    
+
     # Select model based on CLI argument or use first one
     if args.model_name:
         model_path = models_dir / f"{args.model_name}.onnx"
@@ -642,28 +713,28 @@ if __name__ == "__main__":
     else:
         model_path = onnx_models[0]
         print(f"No model specified, using: {model_path.stem}")
-    
+
     # Create output directory for Structured Text files
     st_output_dir = Path("models") / "structured_text"
     st_output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Generate output filename
     model_name = model_path.stem
     output_path = st_output_dir / f"{model_name}.st"
-    
+
     print(f"Converting {model_path} to Structured Text...")
-    
+
     try:
         # Load and analyze
         from onnx_model import load_and_analyze_onnx_model
         analyzer = load_and_analyze_onnx_model(model_path)
-        
+
         if analyzer:
             # Convert to IR
             print("\nConverting to intermediate representation...")
             network_ir = onnx_to_ir(analyzer)
             print(f"Network IR: {network_ir}")
-            
+
             # Validate IR
             errors = validate_network_ir(network_ir)
             if errors:
@@ -672,27 +743,36 @@ if __name__ == "__main__":
                     print(f"  - {error}")
             else:
                 print("✓ Network IR validated successfully")
-            
+
             # Generate code
             print("\nGenerating Structured Text code...")
-            code = onnx_to_structured_text(analyzer, "NeuralNetworkFB")
-            
+            code = generate_st_from_onnx_file(
+                model_path,
+                output_path=output_path,
+                fb_name="NeuralNetworkFB",
+                include_program=args.with_program,
+                include_openplc_config=args.with_config,
+                program_name=args.program_name,
+                program_instance_name=args.program_instance,
+                cfg_instance_name=args.config_instance,
+            )
+
             # Save to file
             with open(output_path, 'w') as f:
                 f.write(code)
-            
+
             print(f"\n{'='*60}")
             print("Generated code preview (first 50 lines):")
             print(f"{'='*60}")
             lines = code.split('\n')
             for line in lines[:50]:
                 print(line)
-            
+
             if len(lines) > 50:
                 print(f"\n... ({len(lines) - 50} more lines)")
-            
+
             print(f"\n✓ Code saved to: {output_path}")
-        
+
     except Exception as e:
         print(f"Error generating Structured Text code: {e}")
         import traceback
