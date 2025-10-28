@@ -1,13 +1,9 @@
-# This utility file should read in a .tflite file and extract the weights and output them in a numpy array?
+# https://stackoverflow.com/questions/59559289/is-there-any-way-to-convert-a-tensorflow-lite-tflite-file-back-to-a-keras-fil/59566157#59566157
 
 import tensorflow as tf
 import numpy as np
 from pathlib import Path
 import os
-
-# https://stackoverflow.com/questions/59559289/is-there-any-way-to-convert-a-tensorflow-lite-tflite-file-back-to-a-keras-fil/59566157#59566157
-
-
 
 def print_weights(file_path: str | os.PathLike):
   interpreter = tf.lite.Interpreter(model_path=file_path)
@@ -21,7 +17,6 @@ def print_weights(file_path: str | os.PathLike):
     except ValueError as e:
       print(f"  Could not extract tensor data: {tensor_item['name']}")
       print(f"  Exception: {e}")
-
 
 
 def weights_as_np(file_path: str | os.PathLike) -> dict[str, np.ndarray]:
@@ -56,7 +51,6 @@ if __name__ == "__main__":
   loaded = np.load(model_path.with_suffix(".npz"))
   print(loaded.files)  # See all weight names
   print(loaded['arith.constant7']) 
-
 
 
 
