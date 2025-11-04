@@ -9,7 +9,7 @@ from enum import Enum
 
 
 class ActivationType(Enum):
-    """Supported activation functions"""
+    """Types of activation functions supported"""
 
     NONE = "none"
     RELU = "relu"
@@ -20,7 +20,7 @@ class ActivationType(Enum):
 
 @dataclass(frozen=True)
 class DenseLayer:
-    """Represents a dense/fully-connected layer"""
+    """Represents an ONNX dense/fully-connected layer"""
 
     layer_id: int
     weights: np.ndarray
@@ -29,6 +29,27 @@ class DenseLayer:
     input_size: int
     output_size: int
 
+@dataclass(frozen=True)
+class QuantizeLinearLayer:
+    """Represents an ONNX QuantizeLinear layer"""
+
+    layer_id: int
+    input_name: str
+    scale_name: str
+    zero_point_name: str
+    output_name: str
+    axis: Optional[int] = None
+
+@dataclass(frozen=True)
+class DequantizeLinearLayer:
+    """Represents an ONNX DequantizeLinear layer"""
+
+    layer_id: int
+    input_name: str
+    scale_name: str
+    zero_point_name: str
+    output_name: str
+    axis: Optional[int] = None
 
 @dataclass(frozen=True)
 class NetworkIR:

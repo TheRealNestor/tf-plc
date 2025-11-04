@@ -9,16 +9,16 @@ VAR_OUTPUT
 END_VAR
 
 VAR
-    // Temporary computation variables
+    (* Temporary computation variables *)
     i, j : INT;
     sum : REAL;
     initialized : BOOL := FALSE;
 END_VAR
 
-// Initialize weights (one-time setup)
+(* Initialize weights (one-time setup) *)
 IF NOT initialized THEN
     initialized := TRUE;
 END_IF;
 
-// Forward pass computation
+(* Forward pass computation *)
 END_FUNCTION_BLOCK

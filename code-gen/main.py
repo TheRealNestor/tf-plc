@@ -58,7 +58,7 @@ def generate_st_from_onnx_file(
     if not analyzer:
         raise ValueError("Failed to load ONNX model")
 
-    print("\nGenerating Structured Text code (functional approach)...")
+    print("\nGenerating Structured Text code...")
     code = onnx_to_structured_text(
         analyzer,
         fb_name=fb_name,
