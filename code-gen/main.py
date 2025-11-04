@@ -23,9 +23,8 @@ def onnx_to_structured_text(
     cfg_instance_name: str = "Inst0",
 ) -> str:
     network_ir = onnx_to_ir(analyzer)
-    fb_code = generate_function_block(network_ir, fb_name)
+    full_code = generate_function_block(network_ir, fb_name)
 
-    full_code = fb_code
     if openplc:
         full_code = (
             full_code

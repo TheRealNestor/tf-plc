@@ -5,7 +5,7 @@ This module is responsible for generating Structured Text (ST) code from the int
 """
 
 from typing import Tuple
-from .types import NetworkIR, DenseLayer, ActivationType
+from .types import *
 from .st_code import STCode
 import numpy as np
 
@@ -40,22 +40,36 @@ def generate_var_output(network: NetworkIR) -> STCode:
     )
 
 
-def generate_layer_variables(layer: DenseLayer) -> STCode:
+def generate_layer_variables(layer) -> STCode:
     """Generate variable declarations for a single layer."""
-    lines = [
-        f"(* Layer {layer.layer_id} variables *)",
-        f"weights_{layer.layer_id} : ARRAY[0..{layer.input_size-1}, 0..{layer.output_size-1}] OF REAL;",
-    ]
-
-    if layer.bias is not None:
+    lines = [f"(* Layer {layer.layer_id} variables *)"]
+    if (
+        isinstance(layer, MatMulLayer)
+        or isinstance(layer, GemmLayer)
+        or isinstance(layer, FusedGemmLayer)
+    ):
+        lines.append(
+            f"weights_{layer.layer_id} : ARRAY[0..{layer.input_size-1}, 0..{layer.output_size-1}] OF REAL;"
+        )
+        if getattr(layer, "bias", None) is not None:
+            lines.append(
+                f"bias_{layer.layer_id} : ARRAY[0..{layer.output_size-1}] OF REAL;"
+            )
+        lines.append(
+            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
+        )
+    elif isinstance(layer, AddLayer):
         lines.append(
             f"bias_{layer.layer_id} : ARRAY[0..{layer.output_size-1}] OF REAL;"
         )
-
-    lines.append(
-        f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
-    )
-
+        lines.append(
+            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
+        )
+    elif isinstance(layer, ActivationLayer):
+        lines.append(
+            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
+        )
+    # TODO: quantize/dequantize layers....
     return STCode.from_lines(*lines)
 
 
@@ -67,12 +81,14 @@ def generate_var_section(network: NetworkIR) -> STCode:
 
     # Check if any layer uses softmax activation
     has_softmax = any(
-        layer.activation == ActivationType.SOFTMAX for layer in network.layers
+        getattr(layer, "activation", None) == ActivationType.SOFTMAX
+        for layer in network.layers
     )
 
     temp_vars_lines = [
         "(* Temporary computation variables *)",
-        "i, j : INT;",
+        "i : INT;",
+        "j : INT;",
         "sum : REAL;",
     ]
 
@@ -109,13 +125,14 @@ def format_2d_array_init(array: np.ndarray, var_name: str) -> STCode:
     return STCode.from_lines(*lines)
 
 
-def generate_layer_weight_init(layer: DenseLayer) -> STCode:
+def generate_layer_weight_init(layer) -> STCode:
     """Generate weight initialization for a single layer."""
     comment = STCode.from_lines(f"(* Initialize layer {layer.layer_id} weights *)")
-
-    weight_init = format_2d_array_init(layer.weights, f"weights_{layer.layer_id}")
-
-    if layer.bias is not None:
+    if hasattr(layer, "weights"):
+        weight_init = format_2d_array_init(layer.weights, f"weights_{layer.layer_id}")
+    else:
+        weight_init = STCode.empty()
+    if getattr(layer, "bias", None) is not None:
         bias_init = format_1d_array_init(layer.bias, f"bias_{layer.layer_id}")
         return comment + weight_init + bias_init
     else:
@@ -137,76 +154,85 @@ def generate_weight_initialization(network: NetworkIR) -> STCode:
     return header + init_code.indent() + footer
 
 
-def generate_activation_code(
-    activation: ActivationType, array_name: str, size: int
+def generate_activation_layer_code(
+       layer: ActivationLayer, input_var: str, output_var: str
 ) -> STCode:
-    """Generate activation function code based on type."""
+    comment = f"(* Layer {layer.layer_id}: Activation ({layer.activation.name}) *)"
+    lines = [comment] + generate_activation_code(
+        layer.activation, input_var, output_var, layer.output_size
+    )
+    return STCode.from_lines(*lines)
+
+
+def generate_activation_code(
+    activation: ActivationType, input_var: str, output_var: str, size: int
+) -> list[str]:
+    """Return activation code lines (without comment)."""
     match activation:
         case ActivationType.RELU:
-            return STCode.from_lines(
-                "(* ReLU activation *)",
+            return [
                 f"FOR i := 0 TO {size-1} DO",
-                f"    IF {array_name}[i] > 0.0 THEN",
-                f"        {array_name}[i] := {array_name}[i];",
-                "    ELSE",
-                f"        {array_name}[i] := 0.0;",
-                "    END_IF;",
+                f"    {output_var}[i] := MAX({input_var}[i], 0.0);",
                 "END_FOR;",
-            )
-
+            ]
         case ActivationType.SIGMOID:
-            return STCode.from_lines(
-                "(* Sigmoid activation *)",
+            return [
                 f"FOR i := 0 TO {size-1} DO",
-                f"    {array_name}[i] := 1.0 / (1.0 + EXP(-{array_name}[i]));",
+                f"    {output_var}[i] := 1.0 / (1.0 + EXP(-{input_var}[i]));",
                 "END_FOR;",
-            )
-
+            ]
         case ActivationType.TANH:
-            return STCode.from_lines(
-                "(* Tanh activation *)",
+            return [
                 f"FOR i := 0 TO {size-1} DO",
-                f"    {array_name}[i] := (EXP({array_name}[i]) - EXP(-{array_name}[i])) / (EXP({array_name}[i]) + EXP(-{array_name}[i]));",
+                f"    {output_var}[i] := (EXP({input_var}[i]) - EXP(-{input_var}[i])) / (EXP({input_var}[i]) + EXP(-{input_var}[i]));",
                 "END_FOR;",
-            )
-
+            ]
         case ActivationType.SOFTMAX:
-            return STCode.from_lines(
-                "(* Softmax activation *)",
-                f"max_val := {array_name}[0];",
+            return [
+                f"max_val := {input_var}[0];",
                 f"FOR i := 1 TO {size-1} DO",
-                f"    IF {array_name}[i] > max_val THEN",
-                f"        max_val := {array_name}[i];",
+                f"    IF {input_var}[i] > max_val THEN",
+                f"        max_val := {input_var}[i];",
                 "    END_IF;",
                 "END_FOR;",
                 "",
                 "exp_sum := 0.0;",
                 f"FOR i := 0 TO {size-1} DO",
-                f"    {array_name}[i] := EXP({array_name}[i] - max_val);",
-                f"    exp_sum := exp_sum + {array_name}[i];",
+                f"    {output_var}[i] := EXP({input_var}[i] - max_val);",
+                f"    exp_sum := exp_sum + {output_var}[i];",
                 "END_FOR;",
                 "",
                 f"FOR i := 0 TO {size-1} DO",
-                f"    {array_name}[i] := {array_name}[i] / exp_sum;",
+                f"    {output_var}[i] := {output_var}[i] / exp_sum;",
                 "END_FOR;",
-            )
-
+            ]
         case _:
-            return STCode.empty()
+            return []   
 
 
-def generate_matmul_code(layer: DenseLayer, input_var: str, output_var: str) -> STCode:
-    """Generate matrix multiplication code for a dense layer."""
-    has_bias = layer.bias is not None
-
-    bias_line = (
-        f"{output_var}[j] := sum + bias_{layer.layer_id}[j];"
-        if has_bias
-        else f"{output_var}[j] := sum;"
+def generate_matmul_code(layer: MatMulLayer, input_var: str, output_var: str) -> STCode:
+    # MatMul: Y = A * B
+    return STCode.from_lines(
+        f"(* Layer {layer.layer_id}: MatMul *)",
+        f"FOR j := 0 TO {layer.output_size-1} DO",
+        "    sum := 0.0;",
+        f"    FOR i := 0 TO {layer.input_size-1} DO",
+        f"        sum := sum + {input_var}[i] * weights_{layer.layer_id}[i,j];",
+        "    END_FOR;",
+        f"    {output_var}[j] := sum;",
+        "END_FOR;",
     )
 
+
+def generate_gemm_code(layer: GemmLayer, input_var: str, output_var: str) -> STCode:
+    # Gemm: Y = alpha * A * B + beta * C
+    bias_line = (
+        f"{output_var}[j] := {layer.alpha} * sum + {layer.beta} * bias_{layer.layer_id}[j];"
+        if layer.bias is not None
+        else f"{output_var}[j] := {layer.alpha} * sum;"
+    )
     return STCode.from_lines(
-        f"(* Layer {layer.layer_id}: Dense (MatMul + Bias) *)",
+        f"(* Layer {layer.layer_id}: Gemm *)",
         f"FOR j := 0 TO {layer.output_size-1} DO",
         "    sum := 0.0;",
         f"    FOR i := 0 TO {layer.input_size-1} DO",
@@ -217,47 +243,51 @@ def generate_matmul_code(layer: DenseLayer, input_var: str, output_var: str) -> 
     )
 
 
-def generate_layer_forward_pass(
-    layer: DenseLayer, input_var: str, is_last: bool
-) -> Tuple[STCode, str]:
-    """
-    Generate forward pass code for a single layer.
-
-    Args:
-        layer: Dense layer to generate code for
-        input_var: Name of input variable
-        is_last: Whether this is the last layer
-
-    Returns:
-        Tuple of (generated code, output variable name)
-    """
-    output_var = "output_data" if is_last else f"layer_{layer.layer_id}_output"
-
-    matmul_code = generate_matmul_code(layer, input_var, output_var)
+def generate_fused_gemm_code(
+    layer: FusedGemmLayer, input_var: str, output_var: str
+) -> STCode:
+    gemm_code = generate_gemm_code(layer, input_var, output_var)
     activation_code = generate_activation_code(
         layer.activation, output_var, layer.output_size
     )
+    return gemm_code + activation_code
 
-    layer_code = matmul_code
-    if activation_code.lines:
-        layer_code = layer_code + activation_code
 
-    return (layer_code + STCode.blank_line(), output_var)
+def generate_add_code(layer: AddLayer, input_var: str, output_var: str) -> STCode:
+    return STCode.from_lines(
+        f"(* Layer {layer.layer_id}: Add (Bias) *)",
+        f"FOR i := 0 TO {layer.output_size-1} DO",
+        f"    {output_var}[i] := {input_var}[i] + bias_{layer.layer_id}[i];",
+        "END_FOR;",
+    )
 
 
 def generate_forward_pass(network: NetworkIR) -> STCode:
     """Generate complete forward pass computation."""
     header = STCode.from_lines("(* Forward pass computation *)")
-
     forward_code = STCode.empty()
     current_input = "input_data"
 
     for idx, layer in enumerate(network.layers):
         is_last = idx == len(network.layers) - 1
-        layer_code, output_var = generate_layer_forward_pass(
-            layer, current_input, is_last
-        )
-        forward_code = forward_code + layer_code
+        output_var = "output_data" if is_last else f"layer_{layer.layer_id}_output"
+
+        if isinstance(layer, MatMulLayer):
+            layer_code = generate_matmul_code(layer, current_input, output_var)
+        elif isinstance(layer, AddLayer):
+            layer_code = generate_add_code(layer, current_input, output_var)
+        elif isinstance(layer, GemmLayer):
+            layer_code = generate_gemm_code(layer, current_input, output_var)
+        elif isinstance(layer, FusedGemmLayer):
+            layer_code = generate_fused_gemm_code(layer, current_input, output_var)
+        elif isinstance(layer, ActivationLayer):
+            layer_code = generate_activation_layer_code(layer, current_input, output_var)
+        else:
+            layer_code = STCode.from_lines(
+                f"(* Layer {layer.layer_id}: Unsupported layer type *)"
+            )
+
+        forward_code = forward_code + layer_code + STCode.blank_line()
         current_input = output_var
 
     return header + forward_code
@@ -280,4 +310,3 @@ def generate_function_block(
         + generate_forward_pass(network)
         + generate_footer()
     )
-

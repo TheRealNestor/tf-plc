@@ -11,7 +11,6 @@ from enum import Enum
 class ActivationType(Enum):
     """Types of activation functions supported"""
 
-    NONE = "none"
     RELU = "relu"
     SIGMOID = "sigmoid"
     TANH = "tanh"
@@ -19,8 +18,52 @@ class ActivationType(Enum):
 
 
 @dataclass(frozen=True)
-class DenseLayer:
-    """Represents an ONNX dense/fully-connected layer"""
+class ActivationLayer:
+    """Represents an activation function layer"""
+
+    layer_id: int
+    activation: ActivationType
+    input_size: int
+    output_size: int
+
+
+@dataclass(frozen=True)
+class MatMulLayer:
+    """Represents an ONNX MatMul layer"""
+
+    layer_id: int
+    weights: np.ndarray
+    input_size: int
+    output_size: int
+
+@dataclass(frozen=True)
+class AddLayer:
+    """Represents an ONNX Add layer"""
+
+    layer_id: int
+    bias: np.ndarray
+    input_size: int
+    output_size: int
+
+
+@dataclass(frozen=True)
+class GemmLayer:
+    """Represents an ONNX Gemm layer"""
+
+    layer_id: int
+    weights: np.ndarray
+    bias: Optional[np.ndarray]
+    input_size: int
+    output_size: int
+
+    alpha: float = 1.0
+    beta: float = 1.0
+    transA : bool = False
+    transB : bool = False
+
+@dataclass(frozen=True)
+class FusedGemmLayer:
+    """Represents a fused Gemm + Activation layer"""
 
     layer_id: int
     weights: np.ndarray
@@ -28,6 +71,12 @@ class DenseLayer:
     activation: ActivationType
     input_size: int
     output_size: int
+
+    alpha: float = 1.0
+    beta: float = 1.0
+    transA : bool = False
+    transB : bool = False
+
 
 @dataclass(frozen=True)
 class QuantizeLinearLayer:
@@ -57,7 +106,12 @@ class NetworkIR:
 
     input_size: int
     output_size: int
-    layers: Tuple[DenseLayer, ...]
+    layers: Tuple[object, ...]
 
     def __str__(self) -> str:
-        return f"NetworkIR(input={self.input_size}, output={self.output_size}, layers={len(self.layers)})"
+        layer_types = [type(layer).__name__ for layer in self.layers]
+        layers_str = "\n  ".join(layer_types)
+        return (
+            f"NetworkIR(input={self.input_size}, output={self.output_size}, layers={len(self.layers)})\n"
+            f"Layer types (in order):\n  {layers_str}"
+        )
