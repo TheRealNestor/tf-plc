@@ -1,6 +1,6 @@
-# Translate onnx model to PLC Structured Text (IEC 61131-3)
-
-# Start with simple feedforward network with relu activations
+"""
+Loads and analyzes ONNX models to extract weights, layer information, and model structure for code generation.
+"""
 
 import onnx
 import numpy as np
