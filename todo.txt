@@ -1,3 +1,5 @@
+- Create a working tensorflow model in python (which we can use as example)
+
 - Verify that new refactor still works
 
 - Add Conv layers
