@@ -1,3 +1,8 @@
+"""
+Helpers to represent and manipulate Structured Text code snippets.
+"""
+
+
 from dataclasses import dataclass
 from typing import Tuple
 

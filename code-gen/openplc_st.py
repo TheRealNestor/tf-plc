@@ -1,3 +1,7 @@
+"""
+Helpers to generate OpenPLC-specific ST code snippets.
+"""
+
 from .st_code import STCode
 
 def generate_program_wrapper(
