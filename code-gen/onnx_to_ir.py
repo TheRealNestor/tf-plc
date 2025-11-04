@@ -157,6 +157,53 @@ def extract_dequantize_linear_layer(
     )
 
 
+def extract_reshape_layer(
+    layer: Dict, layer_id: int, analyzer: "ONNXModel"
+) -> ReshapeLayer:
+    import numpy as np
+
+    shape_input_name = layer["inputs"][1]
+    if shape_input_name in analyzer.weights:
+        raw_shape = analyzer.weights[shape_input_name]
+        target_shape = tuple(int(x) for x in raw_shape)
+    else:
+        target_shape = tuple()
+
+    input_name = layer["inputs"][0]
+    input_info = analyzer.input_info.get(input_name, None)
+    if input_info:
+        input_shape = tuple(input_info["shape"])
+        # Ignore dynamic batch dimension (-1)
+        input_size = int(np.prod([d for d in input_shape if d > 0]))
+    else:
+        input_shape = tuple()
+        input_size = int(np.prod(target_shape)) if target_shape else 0
+
+    # Handle -1 in target_shape (infer dimension)
+    if target_shape and -1 in target_shape:
+        known = [d for d in target_shape if d > 0]
+        known_prod = int(np.prod(known)) if known else 1
+        inferred = int(input_size // known_prod) if known_prod != 0 else 0
+        target_shape = tuple(inferred if d == -1 else d for d in target_shape)
+
+    output_shape = target_shape if target_shape else input_shape
+    output_size = int(np.prod(output_shape)) if output_shape else input_size
+
+    # Ensure output_size is positive
+    if output_size <= 0:
+        raise ValueError(
+            f"Invalid output size for Reshape layer {layer_id}: {output_size}"
+        )
+
+    return ReshapeLayer(
+        layer_id=layer_id,
+        input_size=input_size,
+        output_size=output_size,
+        input_shape=input_shape,
+        output_shape=output_shape,
+    )
+
+
 LAYER_EXTRACTORS = {
     "MatMul": extract_matmul_layer,
     "Add": extract_add_layer,
@@ -168,6 +215,7 @@ LAYER_EXTRACTORS = {
     "Softmax": extract_activation_layer,
     "QuantizeLinear": extract_quantize_linear_layer,
     "DequantizeLinear": extract_dequantize_linear_layer,
+    "Reshape": extract_reshape_layer,
 }
 
 
@@ -176,16 +224,9 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
     output_info = list(analyzer.output_info.values())[0]
     input_shape = input_info["shape"]
     output_shape = output_info["shape"]
-    input_size = (
-        input_shape[1]
-        if (input_shape[0] == -1 or input_shape[0] == 1)
-        else input_shape[0]
-    )
-    output_size = (
-        output_shape[1]
-        if (output_shape[0] == -1 or output_shape[0] == 1)
-        else output_shape[0]
-    )
+
+    input_size = int(np.prod(input_shape))
+    output_size = int(np.prod(output_shape))
 
     ir_layers = []
     layer_id = 0
@@ -197,7 +238,7 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
         op_type = layer_dict["op_type"]
         extractor = LAYER_EXTRACTORS.get(op_type)
         layer = None
-        consumed = 1 # ONNX layers are directly mapped one-to-one in the IR. Not combining layers. 
+        consumed = 1  # ONNX layers are directly mapped one-to-one in the IR. Not combining layers.
 
         if extractor:
             if op_type in ["MatMul"]:
@@ -222,6 +263,8 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
                 layer = extractor(layer_dict, layer_id)
             elif op_type in ["DequantizeLinear"]:
                 layer = extractor(layer_dict, layer_id)
+            elif op_type in ["Reshape"]:
+                layer = extractor(layer_dict, layer_id, analyzer)
             else:
                 pass
 

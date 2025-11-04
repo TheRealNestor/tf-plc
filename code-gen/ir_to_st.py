@@ -4,7 +4,6 @@ IR to Structured Text Code Generation Module
 This module is responsible for generating Structured Text (ST) code from the intermediate representation (IR) of a neural network.
 """
 
-from typing import Tuple
 from .types import *
 from .st_code import STCode
 import numpy as np
@@ -40,6 +39,26 @@ def generate_var_output(network: NetworkIR) -> STCode:
     )
 
 
+def generate_reshape_code(
+    layer: ReshapeLayer, input_var: str, output_var: str
+) -> STCode:
+    """Generate code corresponding to a ONNX Reshape layer."""
+    same_size = layer.input_size == layer.output_size
+
+    if same_size:
+        # Copy input to output
+        return STCode.from_lines(
+            f"(* Layer {layer.layer_id}: Reshape (copy input to output) *)",
+            f"FOR i := 0 TO {layer.input_size-1} DO",
+            f"    {output_var}[i] := {input_var}[i];",
+            "END_FOR;",
+        )
+
+    raise NotImplementedError(
+        "Reshape layer with different sizes is not implemented yet."
+    )
+
+
 def generate_layer_variables(layer) -> STCode:
     """Generate variable declarations for a single layer."""
     lines = [f"(* Layer {layer.layer_id} variables *)"]
@@ -69,6 +88,10 @@ def generate_layer_variables(layer) -> STCode:
         lines.append(
             f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
         )
+    elif isinstance(layer, ReshapeLayer):
+        lines.append(
+            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
+        )
     # TODO: quantize/dequantize layers....
     return STCode.from_lines(*lines)
 
@@ -79,12 +102,6 @@ def generate_var_section(network: NetworkIR) -> STCode:
     for layer in network.layers:
         layer_vars = layer_vars + generate_layer_variables(layer) + STCode.blank_line()
 
-    # Check if any layer uses softmax activation
-    has_softmax = any(
-        getattr(layer, "activation", None) == ActivationType.SOFTMAX
-        for layer in network.layers
-    )
-
     temp_vars_lines = [
         "(* Temporary computation variables *)",
         "i : INT;",
@@ -92,6 +109,11 @@ def generate_var_section(network: NetworkIR) -> STCode:
         "sum : REAL;",
     ]
 
+    # Check if any layer uses softmax activation
+    has_softmax = any(
+        getattr(layer, "activation", None) == ActivationType.SOFTMAX
+        for layer in network.layers
+    )
     if has_softmax:
         temp_vars_lines.extend(
             [
@@ -127,16 +149,15 @@ def format_2d_array_init(array: np.ndarray, var_name: str) -> STCode:
 
 def generate_layer_weight_init(layer) -> STCode:
     """Generate weight initialization for a single layer."""
-    comment = STCode.from_lines(f"(* Initialize layer {layer.layer_id} weights *)")
     if hasattr(layer, "weights"):
         weight_init = format_2d_array_init(layer.weights, f"weights_{layer.layer_id}")
     else:
         weight_init = STCode.empty()
     if getattr(layer, "bias", None) is not None:
         bias_init = format_1d_array_init(layer.bias, f"bias_{layer.layer_id}")
-        return comment + weight_init + bias_init
+        return weight_init + bias_init
     else:
-        return comment + weight_init
+        return weight_init
 
 
 def generate_weight_initialization(network: NetworkIR) -> STCode:
@@ -155,7 +176,7 @@ def generate_weight_initialization(network: NetworkIR) -> STCode:
 
 
 def generate_activation_layer_code(
-       layer: ActivationLayer, input_var: str, output_var: str
+    layer: ActivationLayer, input_var: str, output_var: str
 ) -> STCode:
     comment = f"(* Layer {layer.layer_id}: Activation ({layer.activation.name}) *)"
     lines = [comment] + generate_activation_code(
@@ -207,7 +228,7 @@ def generate_activation_code(
                 "END_FOR;",
             ]
         case _:
-            return []   
+            return []
 
 
 def generate_matmul_code(layer: MatMulLayer, input_var: str, output_var: str) -> STCode:
@@ -246,6 +267,7 @@ def generate_gemm_code(layer: GemmLayer, input_var: str, output_var: str) -> STC
 def generate_fused_gemm_code(
     layer: FusedGemmLayer, input_var: str, output_var: str
 ) -> STCode:
+    # FusedGemm: Gemm followed by Activation
     gemm_code = generate_gemm_code(layer, input_var, output_var)
     activation_code = generate_activation_code(
         layer.activation, output_var, layer.output_size
@@ -278,10 +300,14 @@ def generate_forward_pass(network: NetworkIR) -> STCode:
             layer_code = generate_add_code(layer, current_input, output_var)
         elif isinstance(layer, GemmLayer):
             layer_code = generate_gemm_code(layer, current_input, output_var)
+        elif isinstance(layer, ReshapeLayer):
+            layer_code = generate_reshape_code(layer, current_input, output_var)
         elif isinstance(layer, FusedGemmLayer):
             layer_code = generate_fused_gemm_code(layer, current_input, output_var)
         elif isinstance(layer, ActivationLayer):
-            layer_code = generate_activation_layer_code(layer, current_input, output_var)
+            layer_code = generate_activation_layer_code(
+                layer, current_input, output_var
+            )
         else:
             layer_code = STCode.from_lines(
                 f"(* Layer {layer.layer_id}: Unsupported layer type *)"

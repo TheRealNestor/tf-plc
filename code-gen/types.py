@@ -8,6 +8,19 @@ from dataclasses import dataclass
 from enum import Enum
 
 
+@dataclass(frozen=True)
+class ReshapeLayer:
+    """Represents an ONNX Reshape layer"""
+
+    layer_id: int
+    input_size: int
+    output_size: int
+    input_shape: Tuple[int, ...]
+    output_shape: Tuple[int, ...]
+    
+    # input size / output size are total number of elements
+    # input_shape / output_shape are the actual tensor shapes (useful for reasoning about reshapes)
+
 class ActivationType(Enum):
     """Types of activation functions supported"""
 
