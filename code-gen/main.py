@@ -48,8 +48,6 @@ def generate_st_from_onnx_file(
     program_instance_name: str = "nn",
     cfg_instance_name: str = "Inst0",
 ) -> str:
-    from pathlib import Path
-    from .onnx_model import load_and_analyze_onnx_model
 
     print("Loading ONNX model...")
     analyzer = load_and_analyze_onnx_model(onnx_path)

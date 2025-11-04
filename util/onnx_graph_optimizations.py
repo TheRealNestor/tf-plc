@@ -32,7 +32,6 @@ def main():
 
     optimize_onnx_model(input_path, output_path)
 
-
 if __name__ == "__main__":
     main()
 
