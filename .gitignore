@@ -4,5 +4,3 @@ venv
 .python-version
 __pycache__/
 *.npz
-
-todo.txt
