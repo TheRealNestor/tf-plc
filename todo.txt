@@ -1,3 +1,5 @@
+- Verify that new refactor still works
+
 - Add Conv layers
 - Add dropout layers
 - Quantize/Dequantize layers (I think values for this are already accessible statically in the IR, probably a simple calculation to add this)
