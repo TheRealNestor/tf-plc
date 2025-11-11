@@ -1,4 +1,0 @@
-python -m tf2onnx.convert --saved-model tensorflow-model-path --output model.onnx
-
-
-python -m tf2onnx.convert --tflite models/temp_sensor_with_data_int8.tflite  --output models/onnx/temp_data_int8.onnx
