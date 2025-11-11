@@ -4,7 +4,7 @@ Type descriptions related to the neural network.
 
 import numpy as np
 from typing import Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -21,21 +21,16 @@ class BaseLayer:
     """Base class for all layers"""
 
     layer_id: int
-    name: Optional[str] = None
-    op_type = Optional[str]
-    inputs: Optional[Tuple[str, ...]] = None
-    outputs: Optional[Tuple[str, ...]] = None
-    attributes: Optional[dict] = None
+    name: str
+    op_type: str
+    inputs: Tuple[str, ...] = ()
+    outputs: Tuple[str, ...] = ()
+    attributes: dict = field(default_factory=dict)
 
-    # Size information
-    input_size: Optional[int] = None
-    output_size: Optional[int] = None
-
-    # Shape information
+    input_size: int
+    output_size: int
     input_shape: Optional[Tuple[int, ...]] = None
     output_shape: Optional[Tuple[int, ...]] = None
-
-    # Type information
     input_type: Optional[str] = None
     output_type: Optional[str] = None
 
@@ -49,11 +44,11 @@ class ActivationLayer(BaseLayer):
 class LinearLayer(BaseLayer):
     """Base class for layers with weights and biases"""
 
-    weights: Optional[np.ndarray] = None
-    bias: Optional[np.ndarray] = None
+    weights: np.ndarray
+    bias: Optional[np.ndarray] = None # Some linear layers may have bias
 
 @dataclass(frozen=True)
-class MatMulLayer(BaseLayer):
+class MatMulLayer(LinearLayer):
     """Base class for MatMul layers"""
     pass
 
@@ -68,7 +63,7 @@ class GemmLayer(LinearLayer):
 @dataclass(frozen=True)
 class FusedGemmLayer(GemmLayer):
     """Base class for Fused Gemm + Activation layers"""
-    activation: ActivationLayer
+    activation: ActivationType
 
 
 @dataclass(frozen=True)

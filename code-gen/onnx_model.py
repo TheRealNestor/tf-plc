@@ -61,30 +61,31 @@ class ONNXModel:
         return onnx.helper.tensor_dtype_to_string(elem_type)
 
     def _build_tensor_info(self):
-        """Build a mapping from tensor names to their types and shapes."""
+        """Build comprehensive tensor information from ONNX model"""
         if not self.model:
-            print("Model not loaded. Call load_model() first.")
             return
 
         tensor_info = {}
 
-        # Process inputs, outputs, and intermediate tensors
-        for value_info in list(self.graph.input) + list(self.graph.output) + list(self.graph.value_info):
-            name = value_info.name
-            elem_type = value_info.type.tensor_type.elem_type
-            shape = []
-            for dim in value_info.type.tensor_type.shape.dim:
-                if dim.dim_value:
-                    shape.append(dim.dim_value)
-                else:
-                    shape.append(-1)  # Unknown dimension
+        # Process all value infos (inputs, outputs, intermediates)
+        all_value_infos = (
+            list(self.graph.input) +
+            list(self.graph.output) +
+            list(self.graph.value_info)
+        )
 
-            tensor_info[name] = {
-                'dtype': ONNXModel.get_tensor_type_name(elem_type),
-                'shape': shape
-            }
+        for value_info in all_value_infos:
+            if value_info.type.tensor_type.elem_type:
+                shape = []
+                for dim in value_info.type.tensor_type.shape.dim:
+                    shape.append(dim.dim_value if dim.dim_value else -1)
 
-        # Also add initializers (weights/biases)
+                tensor_info[value_info.name] = {
+                    'dtype': ONNXModel.get_tensor_type_name(value_info.type.tensor_type.elem_type),
+                    'shape': shape
+                }
+
+        # Add initializer info (weights, constants)
         for initializer in self.graph.initializer:
             tensor_data = onnx.numpy_helper.to_array(initializer)
             tensor_info[initializer.name] = {
