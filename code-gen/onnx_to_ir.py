@@ -149,8 +149,8 @@ def extract_gemm_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarray
 
     return GemmLayer(
         **base_info,
-        weights=weight_tensor,      # Required
-        bias=bias_tensor,           # Optional (can be None)
+        weights=weight_tensor,      
+        bias=bias_tensor,           
         input_size=input_size,
         output_size=output_size,
         alpha=attrs.get("alpha", 1.0),

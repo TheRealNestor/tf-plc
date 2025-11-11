@@ -303,8 +303,7 @@ if __name__ == "__main__":
         print(f"\nExtracted {len(analyzer.weights)} weight tensors")
         print(f"Found {len(analyzer.layers)} layers")
         
-        print("\nFirst 3 layers in detail:")
-        for i, layer in enumerate(analyzer.layers[:3]):
+        for i, layer in enumerate(analyzer.layers):
             print(f"\nLayer {i+1}:")
             print(f"  Name: {layer['name']}")
             print(f"  Type: {layer['op_type']}")

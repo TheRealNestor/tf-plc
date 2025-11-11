@@ -53,56 +53,22 @@ class TemperaturePredictionModel:
         print(f"Generating {samples} temperature samples with labels...")
 
         for i in range(samples):
-            scenario = i % 10  # 10 different scenarios
+            # Generate sequential data with gradual changes
+            if i == 0:
+                # Start with a random temperature
+                temp = np.random.uniform(-10, 40)
+            else:
+                temp_change = np.random.normal(0, 2)  # Small random change
+                temp = temperatures[-1] + temp_change
+                temp = np.clip(temp, -30, 150)  # Keep within realistic bounds
 
-            if scenario in [0, 1]:  # Cold scenarios (20% of data)
-                if scenario == 0:  # Regular cold
-                    temp = np.random.normal(2, 3)  # Mean 2°C, std 3°C
-                    temp = np.clip(temp, -15, 8)
-                else:  # Very cold
-                    temp = np.random.normal(-5, 4)  # Mean -5°C, std 4°C
-                    temp = np.clip(temp, -25, 5)
+            # Occasionally introduce noise or outliers
+            if np.random.random() < 0.05:  # 5% chance of noise
+                temp += np.random.uniform(-20, 20)  # Large random jump
+            elif np.random.random() < 0.02:  # 2% chance of extreme outlier
+                temp = np.random.uniform(-30, 150)
 
-            elif scenario in [2, 3, 4, 5]:  # Normal scenarios (40% of data)
-                if scenario == 2:  # Cool normal
-                    temp = np.random.normal(15, 2)  # Mean 15°C, std 2°C
-                    temp = np.clip(temp, 12, 22)
-                elif scenario == 3:  # Mild normal
-                    temp = np.random.normal(20, 3)  # Mean 20°C, std 3°C
-                    temp = np.clip(temp, 15, 25)
-                elif scenario == 4:  # Warm normal
-                    temp = np.random.normal(25, 2)  # Mean 25°C, std 2°C
-                    temp = np.clip(temp, 22, 28)
-                else:  # Room temperature
-                    temp = np.random.normal(22, 1.5)  # Mean 22°C, std 1.5°C
-                    temp = np.clip(temp, 18, 26)
-
-            elif scenario in [6, 7, 8]:  # Hot scenarios (30% of data)
-                if scenario == 6:  # Moderately hot
-                    temp = np.random.normal(40, 5)  # Mean 40°C, std 5°C
-                    temp = np.clip(temp, 32, 50)
-                elif scenario == 7:  # Very hot
-                    temp = np.random.normal(60, 8)  # Mean 60°C, std 8°C
-                    temp = np.clip(temp, 45, 80)
-                else:  # Extremely hot
-                    temp = np.random.normal(85, 10)  # Mean 85°C, std 10°C
-                    temp = np.clip(temp, 65, 120)
-
-            else:  # Extreme outliers (10% of data)
-                # Generate extreme values that should be labeled based on the value itself
-                if np.random.random() < 0.3:  # 30% extreme cold
-                    temp = np.random.uniform(-30, -15)
-                elif np.random.random() < 0.5:  # 35% extreme hot (of remaining 70%)
-                    temp = np.random.uniform(100, 150)
-                else:  # 35% moderate outliers
-                    temp = np.random.choice([
-                        np.random.uniform(-10, 5),    # Cold outlier
-                        np.random.uniform(35, 45),    # Hot outlier
-                        np.random.uniform(8, 12),     # Border case
-                        np.random.uniform(28, 32)     # Border case
-                    ])
-
-            # Label based on actual temperature value (not scenario)
+            # Label based on actual temperature value
             if temp <= cold_threshold:
                 label = 'cold'
             elif temp <= hot_threshold:
@@ -113,23 +79,13 @@ class TemperaturePredictionModel:
             temperatures.append(round(temp, 2))
             labels.append(label)
 
-        # Convert to numpy arrays
         temperatures = np.array(temperatures)
         labels = np.array(labels)
 
-        # Print distribution
-        unique, counts = np.unique(labels, return_counts=True)
-        print(f"Label distribution:")
-        for label, count in zip(unique, counts):
-            percentage = (count / len(labels)) * 100
-            print(f"  {label}: {count} samples ({percentage:.1f}%)")
-
-        # Save to CSV
         csv_path = Path(csv_output)
         csv_path.parent.mkdir(exist_ok=True)
         
         try:
-            # Try using pandas if available
             df = pd.DataFrame({
                 'temperature': temperatures,
                 'label': labels
@@ -147,48 +103,26 @@ class TemperaturePredictionModel:
         return temperatures, labels
 
     def create_sequences_from_data(self, temperatures, labels):
-        """Create training sequences from temperature data and labels with smart labeling"""
+        """Create sequences of temperature data for training"""
         X, y = [], []
         label_map = {'cold': 0, 'normal': 1, 'hot': 2}
 
         for i in range(len(temperatures) - self.sequence_length):
-            # Input: sequence of temperatures
             sequence = temperatures[i:(i + self.sequence_length)]
             X.append(sequence)
 
-            # Smart labeling strategy for output
             if labels is not None:
-                # Use provided label for the target temperature
                 target_label = labels[i + self.sequence_length]
                 class_label = label_map.get(target_label, 1)
             else:
-                # Fallback: determine label from sequence statistics
-                sequence_with_target = temperatures[i:(i + self.sequence_length + 1)]
-                
-                # Check for extreme outliers first
-                target_temp = temperatures[i + self.sequence_length]
                 sequence_mean = np.mean(sequence)
-                sequence_std = np.std(sequence)
-                
-                # If target is extreme outlier (>2 std devs from sequence mean), label by target value
-                if abs(target_temp - sequence_mean) > 2 * sequence_std:
-                    if target_temp <= 10:
-                        class_label = 0  # cold
-                    elif target_temp <= 30:
-                        class_label = 1  # normal
-                    else:
-                        class_label = 2  # hot
+                if sequence_mean <= 10:
+                    class_label = 0  # cold
+                elif sequence_mean <= 30:
+                    class_label = 1  # normal
                 else:
-                    # Use mean of sequence including target for stable labeling
-                    mean_temp = np.mean(sequence_with_target)
-                    if mean_temp <= 10:
-                        class_label = 0  # cold
-                    elif mean_temp <= 30:
-                        class_label = 1  # normal
-                    else:
-                        class_label = 2  # hot
+                    class_label = 2  # hot
 
-            # One-hot encode the class
             one_hot = [0, 0, 0]
             one_hot[class_label] = 1
             y.append(one_hot)
@@ -416,12 +350,12 @@ class TemperaturePredictionModel:
                 keras_path = models_dir / f"{model_name}.keras"
                 if keras_path.exists():
                     size_mb = keras_path.stat().st_size / (1024 * 1024)
-                    print(f"     📄 Complete model (.keras): {size_mb:.2f} MB")
+                    print(f"     Complete model (.keras): {size_mb:.2f} MB")
 
                 # Check for weights files
                 weights_file = f"{model_name}.weights.h5"
                 if any(f.name == weights_file for f in all_files):
-                    print(f"     📄 Weights only: available")
+                    print(f"     Weights only: available")
                 print()
         else:
             print("No saved models found in models folder.")
@@ -453,38 +387,15 @@ class TemperaturePredictionModel:
             print(f"\n{scenario_name}:")
             print(f"   Sensor readings: {temps}")
             
-            # Show what the smart labeling would predict
-            mean_temp = np.mean(temps)
-            target_temp = temps[-1]
-            sequence_std = np.std(temps[:-1]) if len(temps) > 1 else 0
-            sequence_mean = np.mean(temps[:-1]) if len(temps) > 1 else temps[0]
-            
-            # Determine expected label using our logic
-            is_outlier = abs(target_temp - sequence_mean) > 2 * sequence_std if sequence_std > 0 else False
-            if is_outlier:
-                expected_temp = target_temp
-            else:
-                expected_temp = mean_temp
-                
-            if expected_temp <= 10:
-                expected_label = "Cold"
-            elif expected_temp <= 30:
-                expected_label = "Normal" 
-            else:
-                expected_label = "Hot"
-                
-            print(f"   Mean: {mean_temp:.1f}°C, Target: {target_temp:.1f}°C, Expected: {expected_label}")
-            print(f"   {'Outlier detected' if is_outlier else 'Using sequence average'}")
-
             if len(temps) >= self.sequence_length:
                 prediction = self.predict(temps)
                 if prediction:
                     pred = prediction[0]
-                    print(f"   🔮 Prediction: {pred['class_name']} (confidence: {pred['confidence']:.1%})")
+                    print(f"   Prediction: {pred['class_name']} (confidence: {pred['confidence']:.1%})")
                     probs = pred['probabilities']
-                    print(f"   📊 Probabilities - Cold: {probs['cold']:.1%}, Normal: {probs['normal']:.1%}, Hot: {probs['hot']:.1%}")
+                    print(f"   Probabilities - Cold: {probs['cold']:.1%}, Normal: {probs['normal']:.1%}, Hot: {probs['hot']:.1%}")
             else:
-                print(f"   ⚠️  Need at least {self.sequence_length} readings for prediction")
+                print(f"     Need at least {self.sequence_length} readings for prediction")
             print("   " + "-" * 40)
 
 
@@ -518,7 +429,7 @@ def main():
         if not model.load_model():
             print("\nTraining new model...")
             # Generate fresh training data
-            temperatures = model.train_model(generate_new_data=True, samples=15000)
+            temperatures = model.train_model(generate_new_data=False, samples=15000)
 
             # Save model and weights
             print("\nSaving model...")
@@ -533,31 +444,6 @@ def main():
 
     # Run sensor simulation demo
     model.simulate_sensor_demo()
-
-    # Make predictions with sample data
-    current_temp = recent_temps[-1] if len(recent_temps) > 0 else 20.0
-    print(f"\nCurrent temperature: {current_temp:.1f}°C")
-    print("\nReal-time predictions:")
-
-    # Test with different sample sequences
-    test_sequences = [
-        [18, 19, 20, 21, 20],  # Normal range
-        [15, 12, 8, 5, 2],     # Cooling down to cold
-        [25, 28, 32, 38, 42],  # Heating up to hot
-        [8, 6, 4, 2, 0],       # Cold range
-        [35, 40, 45, 50, 55]   # Hot range
-    ]
-
-    for i, seq in enumerate(test_sequences, 1):
-        pred = model.predict(seq)
-        if pred:
-            prediction = pred[0]
-            print(f"Test {i} {seq}: {prediction['class_name']} "
-                  f"(confidence: {prediction['confidence']:.1%})")
-
-    # Run the sensor demo simulation
-    model.simulate_sensor_demo()
-
 
 if __name__ == "__main__":
     main()
