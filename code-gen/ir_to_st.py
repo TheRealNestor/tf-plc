@@ -58,7 +58,6 @@ def generate_reshape_code(
         "Reshape layer with different sizes is not implemented yet."
     )
 
-
 def generate_layer_variables(layer) -> STCode:
     """Generate variable declarations for a single layer."""
     lines = [f"(* Layer {layer.layer_id} variables *)"]
@@ -93,6 +92,14 @@ def generate_layer_variables(layer) -> STCode:
             f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
         )
     # TODO: quantize/dequantize layers....
+    elif isinstance(layer, QuantizeLinearLayer) or isinstance(layer, DequantizeLinearLayer):
+        lines.append(
+            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
+        )
+    # TODO: dropout layers, conv layers, etc.
+    else:
+        raise NotImplementedError(
+            f"Layer type {type(layer)} is not supported.")
     return STCode.from_lines(*lines)
 
 
@@ -100,7 +107,8 @@ def generate_var_section(network: NetworkIR) -> STCode:
     """Generate VAR section with all internal variables."""
     layer_vars = STCode.empty()
     for layer in network.layers:
-        layer_vars = layer_vars + generate_layer_variables(layer) + STCode.blank_line()
+        layer_vars = layer_vars + \
+            generate_layer_variables(layer) + STCode.blank_line()
 
     temp_vars_lines = [
         "(* Temporary computation variables *)",
@@ -143,14 +151,15 @@ def format_2d_array_init(array: np.ndarray, var_name: str) -> STCode:
     lines = []
     for i in range(array.shape[0]):
         for j in range(array.shape[1]):
-            lines.append(f"{var_name}[{i},{j}] := {array[i,j]:.6f};")
+            lines.append(f"{var_name}[{i},{j}] := {array[i, j]:.6f};")
     return STCode.from_lines(*lines)
 
 
 def generate_layer_weight_init(layer) -> STCode:
     """Generate weight initialization for a single layer."""
     if hasattr(layer, "weights"):
-        weight_init = format_2d_array_init(layer.weights, f"weights_{layer.layer_id}")
+        weight_init = format_2d_array_init(
+            layer.weights, f"weights_{layer.layer_id}")
     else:
         weight_init = STCode.empty()
     if getattr(layer, "bias", None) is not None:
@@ -165,7 +174,8 @@ def generate_weight_initialization(network: NetworkIR) -> STCode:
     init_code = STCode.empty()
 
     for layer in network.layers:
-        init_code = init_code + generate_layer_weight_init(layer) + STCode.blank_line()
+        init_code = init_code + \
+            generate_layer_weight_init(layer) + STCode.blank_line()
 
     header = STCode.from_lines(
         "(* Initialize weights (one-time setup) *)", "IF NOT initialized THEN"
@@ -268,6 +278,8 @@ def generate_fused_gemm_code(
     layer: FusedGemmLayer, input_var: str, output_var: str
 ) -> STCode:
     # FusedGemm: Gemm followed by Activation
+
+    # TODO: This should be the optimized version instead of just calling both sequentially
     gemm_code = generate_gemm_code(layer, input_var, output_var)
     activation_code = generate_activation_code(
         layer.activation, output_var, layer.output_size
@@ -301,9 +313,11 @@ def generate_forward_pass(network: NetworkIR) -> STCode:
         elif isinstance(layer, GemmLayer):
             layer_code = generate_gemm_code(layer, current_input, output_var)
         elif isinstance(layer, ReshapeLayer):
-            layer_code = generate_reshape_code(layer, current_input, output_var)
+            layer_code = generate_reshape_code(
+                layer, current_input, output_var)
         elif isinstance(layer, FusedGemmLayer):
-            layer_code = generate_fused_gemm_code(layer, current_input, output_var)
+            layer_code = generate_fused_gemm_code(
+                layer, current_input, output_var)
         elif isinstance(layer, ActivationLayer):
             layer_code = generate_activation_layer_code(
                 layer, current_input, output_var
