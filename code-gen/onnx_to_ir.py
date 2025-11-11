@@ -9,6 +9,7 @@ import numpy as np
 from .onnx_model import ONNXModel
 
 
+
 def extract_activation_layer(
     layer: Dict, layer_id: int, input_size: int, output_size: int
 ) -> ActivationLayer:

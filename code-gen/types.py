@@ -8,19 +8,6 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-@dataclass(frozen=True)
-class ReshapeLayer:
-    """Represents an ONNX Reshape layer"""
-
-    layer_id: int
-    input_size: int
-    output_size: int
-    input_shape: Tuple[int, ...]
-    output_shape: Tuple[int, ...]
-    
-    # input size / output size are total number of elements
-    # input_shape / output_shape are the actual tensor shapes (useful for reasoning about reshapes)
-
 class ActivationType(Enum):
     """Types of activation functions supported"""
 
@@ -29,88 +16,87 @@ class ActivationType(Enum):
     TANH = "tanh"
     SOFTMAX = "softmax"
 
+@dataclass(frozen=True)
+class BaseLayer:
+    """Base class for all layers"""
+
+    layer_id: int
+    name: Optional[str] = None
+    op_type = Optional[str]
+    inputs: Optional[Tuple[str, ...]] = None
+    outputs: Optional[Tuple[str, ...]] = None
+    attributes: Optional[dict] = None
+
+    # Size information
+    input_size: Optional[int] = None
+    output_size: Optional[int] = None
+
+    # Shape information
+    input_shape: Optional[Tuple[int, ...]] = None
+    output_shape: Optional[Tuple[int, ...]] = None
+
+    # Type information
+    input_type: Optional[str] = None
+    output_type: Optional[str] = None
 
 @dataclass(frozen=True)
-class ActivationLayer:
+class ActivationLayer(BaseLayer):
     """Represents an activation function layer"""
-
-    layer_id: int
     activation: ActivationType
-    input_size: int
-    output_size: int
 
 
 @dataclass(frozen=True)
-class MatMulLayer:
-    """Represents an ONNX MatMul layer"""
+class LinearLayer(BaseLayer):
+    """Base class for layers with weights and biases"""
 
-    layer_id: int
-    weights: np.ndarray
-    input_size: int
-    output_size: int
+    weights: Optional[np.ndarray] = None
+    bias: Optional[np.ndarray] = None
 
 @dataclass(frozen=True)
-class AddLayer:
+class MatMulLayer(BaseLayer):
+    """Base class for MatMul layers"""
+    pass
+
+@dataclass(frozen=True)
+class GemmLayer(LinearLayer):
+    """Base class for Gemm layers"""
+    alpha: float = 1.0
+    beta: float = 1.0
+    transA : bool = False
+    transB : bool = False
+
+@dataclass(frozen=True)
+class FusedGemmLayer(GemmLayer):
+    """Base class for Fused Gemm + Activation layers"""
+    activation: ActivationLayer
+
+
+@dataclass(frozen=True)
+class AddLayer(BaseLayer):
     """Represents an ONNX Add layer"""
-
-    layer_id: int
     bias: np.ndarray
-    input_size: int
-    output_size: int
 
 
 @dataclass(frozen=True)
-class GemmLayer:
-    """Represents an ONNX Gemm layer"""
-
-    layer_id: int
-    weights: np.ndarray
-    bias: Optional[np.ndarray]
-    input_size: int
-    output_size: int
-
-    alpha: float = 1.0
-    beta: float = 1.0
-    transA : bool = False
-    transB : bool = False
+class ReshapeLayer(BaseLayer):
+    """Represents an ONNX Reshape layer"""
+    # TODO: I think I need to add additional information here...
+    pass
 
 @dataclass(frozen=True)
-class FusedGemmLayer:
-    """Represents a fused Gemm + Activation layer"""
-
-    layer_id: int
-    weights: np.ndarray
-    bias: Optional[np.ndarray]
-    activation: ActivationType
-    input_size: int
-    output_size: int
-
-    alpha: float = 1.0
-    beta: float = 1.0
-    transA : bool = False
-    transB : bool = False
-
-
-@dataclass(frozen=True)
-class QuantizeLinearLayer:
+class QuantizeLinearLayer(BaseLayer):
     """Represents an ONNX QuantizeLinear layer"""
 
-    layer_id: int
-    input_name: str
     scale_name: str
     zero_point_name: str
-    output_name: str
     axis: Optional[int] = None
 
 @dataclass(frozen=True)
-class DequantizeLinearLayer:
+class DequantizeLinearLayer(BaseLayer):
     """Represents an ONNX DequantizeLinear layer"""
 
-    layer_id: int
-    input_name: str
     scale_name: str
     zero_point_name: str
-    output_name: str
     axis: Optional[int] = None
 
 @dataclass(frozen=True)
