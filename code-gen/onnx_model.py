@@ -12,7 +12,7 @@ class ONNXModel:
     A class to load and analyze ONNX models, extracting weights, layer information,
     and model structure for later code generation.
     """
-    
+
     def __init__(self, model_path: str | Path):
         """
         Initialize the analyzer with an ONNX model.
@@ -27,6 +27,7 @@ class ONNXModel:
         self.layers = []
         self.input_info = {}
         self.output_info = {}
+        self.tensor_info = {} # Maps tensor names to their types and shapes
         
     def load_model(self) -> bool:
         """
@@ -51,7 +52,48 @@ class ONNXModel:
         except Exception as e:
             print(f"Error loading ONNX model: {e}")
             return False
-    
+        
+
+    @staticmethod
+    def get_tensor_type_name(elem_type: int) -> str:
+        """Convert ONNX tensor type to readable string."""
+        # Refer to: https://onnx.ai/onnx/intro/concepts.html#element-type
+        return onnx.helper.tensor_dtype_to_string(elem_type)
+
+    def _build_tensor_info(self):
+        """Build a mapping from tensor names to their types and shapes."""
+        if not self.model:
+            print("Model not loaded. Call load_model() first.")
+            return
+
+        tensor_info = {}
+
+        # Process inputs, outputs, and intermediate tensors
+        for value_info in list(self.graph.input) + list(self.graph.output) + list(self.graph.value_info):
+            name = value_info.name
+            elem_type = value_info.type.tensor_type.elem_type
+            shape = []
+            for dim in value_info.type.tensor_type.shape.dim:
+                if dim.dim_value:
+                    shape.append(dim.dim_value)
+                else:
+                    shape.append(-1)  # Unknown dimension
+
+            tensor_info[name] = {
+                'dtype': ONNXModel.get_tensor_type_name(elem_type),
+                'shape': shape
+            }
+
+        # Also add initializers (weights/biases)
+        for initializer in self.graph.initializer:
+            tensor_data = onnx.numpy_helper.to_array(initializer)
+            tensor_info[initializer.name] = {
+                'dtype': str(tensor_data.dtype),
+                'shape': list(tensor_data.shape)
+            }
+
+        self.tensor_info = tensor_info
+
     def extract_weights(self) -> Dict[str, np.ndarray]:
         """
         Extract all weights and biases from the model.
@@ -255,16 +297,13 @@ if __name__ == "__main__":
         print(f"No model specified, using: {model_path.stem}\n")
     
     analyzer = load_and_analyze_onnx_model(model_path)
-    
+    analyzer._build_tensor_info()  
     if analyzer:
-        weights = analyzer.weights
-        layers = analyzer.layers
-        
-        print(f"\nExtracted {len(weights)} weight tensors")
-        print(f"Found {len(layers)} layers")
+        print(f"\nExtracted {len(analyzer.weights)} weight tensors")
+        print(f"Found {len(analyzer.layers)} layers")
         
         print("\nFirst 3 layers in detail:")
-        for i, layer in enumerate(layers[:3]):
+        for i, layer in enumerate(analyzer.layers[:3]):
             print(f"\nLayer {i+1}:")
             print(f"  Name: {layer['name']}")
             print(f"  Type: {layer['op_type']}")
