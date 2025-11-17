@@ -16,43 +16,42 @@ class ActivationType(Enum):
     TANH = "tanh"
     SOFTMAX = "softmax"
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class BaseLayer:
     """Base class for all layers"""
 
     layer_id: int
     name: str
     op_type: str
-    inputs: Tuple[str, ...] = ()
-    outputs: Tuple[str, ...] = ()
-    attributes: dict = field(default_factory=dict)
-
     input_size: int
     output_size: int
+    inputs: Tuple[str, ...] = ()
+    outputs: Tuple[str, ...] = ()
+
     input_shape: Optional[Tuple[int, ...]] = None
     output_shape: Optional[Tuple[int, ...]] = None
     input_type: Optional[str] = None
     output_type: Optional[str] = None
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ActivationLayer(BaseLayer):
     """Represents an activation function layer"""
     activation: ActivationType
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class LinearLayer(BaseLayer):
     """Base class for layers with weights and biases"""
 
     weights: np.ndarray
     bias: Optional[np.ndarray] = None # Some linear layers may have bias
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class MatMulLayer(LinearLayer):
     """Base class for MatMul layers"""
     pass
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class GemmLayer(LinearLayer):
     """Base class for Gemm layers"""
     alpha: float = 1.0
@@ -60,25 +59,25 @@ class GemmLayer(LinearLayer):
     transA : bool = False
     transB : bool = False
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class FusedGemmLayer(GemmLayer):
     """Base class for Fused Gemm + Activation layers"""
     activation: ActivationType
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class AddLayer(BaseLayer):
     """Represents an ONNX Add layer"""
     bias: np.ndarray
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ReshapeLayer(BaseLayer):
     """Represents an ONNX Reshape layer"""
     # TODO: I think I need to add additional information here...
     pass
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class QuantizeLinearLayer(BaseLayer):
     """Represents an ONNX QuantizeLinear layer"""
 
@@ -86,7 +85,7 @@ class QuantizeLinearLayer(BaseLayer):
     zero_point_name: str
     axis: Optional[int] = None
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class DequantizeLinearLayer(BaseLayer):
     """Represents an ONNX DequantizeLinear layer"""
 

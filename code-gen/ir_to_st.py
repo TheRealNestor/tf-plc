@@ -7,7 +7,125 @@ This module is responsible for generating Structured Text (ST) code from the int
 from .types import *
 from .st_code import STCode
 import numpy as np
+import logging
 
+logger = logging.getLogger(__name__)
+
+# tensor_dtype: (numpy type, storage type, string name)
+# The storage type is the type used to store the tensor in the *_data field of
+# a TensorProto. All available fields are float_data, int32_data, int64_data,
+# string_data, uint64_data and double_data.
+# TENSOR_TYPE_MAP: dict[int, TensorDtypeMap] = {
+#     int(TensorProto.FLOAT): TensorDtypeMap(
+#         np.dtype("float32"), int(TensorProto.FLOAT), "TensorProto.FLOAT"
+#     ),
+#     int(TensorProto.UINT8): TensorDtypeMap(
+#         np.dtype("uint8"), int(TensorProto.INT32), "TensorProto.UINT8"
+#     ),
+#     int(TensorProto.INT8): TensorDtypeMap(
+#         np.dtype("int8"), int(TensorProto.INT32), "TensorProto.INT8"
+#     ),
+#     int(TensorProto.UINT16): TensorDtypeMap(
+#         np.dtype("uint16"), int(TensorProto.INT32), "TensorProto.UINT16"
+#     ),
+#     int(TensorProto.INT16): TensorDtypeMap(
+#         np.dtype("int16"), int(TensorProto.INT32), "TensorProto.INT16"
+#     ),
+#     int(TensorProto.INT32): TensorDtypeMap(
+#         np.dtype("int32"), int(TensorProto.INT32), "TensorProto.INT32"
+#     ),
+#     int(TensorProto.INT64): TensorDtypeMap(
+#         np.dtype("int64"), int(TensorProto.INT64), "TensorProto.INT64"
+#     ),
+#     int(TensorProto.BOOL): TensorDtypeMap(
+#         np.dtype("bool"), int(TensorProto.INT32), "TensorProto.BOOL"
+#     ),
+#     int(TensorProto.FLOAT16): TensorDtypeMap(
+#         np.dtype("float16"), int(TensorProto.INT32), "TensorProto.FLOAT16"
+#     ),
+#     int(TensorProto.BFLOAT16): TensorDtypeMap(
+#         np.dtype(ml_dtypes.bfloat16),
+#         int(TensorProto.INT32),
+#         "TensorProto.BFLOAT16",
+#     ),
+#     int(TensorProto.DOUBLE): TensorDtypeMap(
+#         np.dtype("float64"), int(TensorProto.DOUBLE), "TensorProto.DOUBLE"
+#     ),
+#     int(TensorProto.COMPLEX64): TensorDtypeMap(
+#         np.dtype("complex64"), int(TensorProto.FLOAT), "TensorProto.COMPLEX64"
+#     ),
+#     int(TensorProto.COMPLEX128): TensorDtypeMap(
+#         np.dtype("complex128"),
+#         int(TensorProto.DOUBLE),
+#         "TensorProto.COMPLEX128",
+#     ),
+#     int(TensorProto.UINT32): TensorDtypeMap(
+#         np.dtype("uint32"), int(TensorProto.UINT64), "TensorProto.UINT32"
+#     ),
+#     int(TensorProto.UINT64): TensorDtypeMap(
+#         np.dtype("uint64"), int(TensorProto.UINT64), "TensorProto.UINT64"
+#     ),
+#     int(TensorProto.STRING): TensorDtypeMap(
+#         np.dtype("object"), int(TensorProto.STRING), "TensorProto.STRING"
+#     ),
+#     int(TensorProto.FLOAT8E4M3FN): TensorDtypeMap(
+#         np.dtype(ml_dtypes.float8_e4m3fn),
+#         int(TensorProto.INT32),
+#         "TensorProto.FLOAT8E4M3FN",
+#     ),
+#     int(TensorProto.FLOAT8E4M3FNUZ): TensorDtypeMap(
+#         np.dtype(ml_dtypes.float8_e4m3fnuz),
+#         int(TensorProto.INT32),
+#         "TensorProto.FLOAT8E4M3FNUZ",
+#     ),
+#     int(TensorProto.FLOAT8E5M2): TensorDtypeMap(
+#         np.dtype(ml_dtypes.float8_e5m2),
+#         int(TensorProto.INT32),
+#         "TensorProto.FLOAT8E5M2",
+#     ),
+#     int(TensorProto.FLOAT8E5M2FNUZ): TensorDtypeMap(
+#         np.dtype(ml_dtypes.float8_e5m2fnuz),
+#         int(TensorProto.INT32),
+#         "TensorProto.FLOAT8E5M2FNUZ",
+#     ),
+#     int(TensorProto.UINT4): TensorDtypeMap(
+#         np.dtype(ml_dtypes.uint4), int(TensorProto.INT32), "TensorProto.UINT4"
+#     ),
+#     int(TensorProto.INT4): TensorDtypeMap(
+#         np.dtype(ml_dtypes.int4), int(TensorProto.INT32), "TensorProto.INT4"
+#     ),
+#     int(TensorProto.FLOAT4E2M1): TensorDtypeMap(
+#         np.dtype(ml_dtypes.float4_e2m1fn),
+#         int(TensorProto.INT32),
+#         "TensorProto.FLOAT4E2M1",
+#     ),
+#     int(TensorProto.FLOAT8E8M0): TensorDtypeMap(
+#         np.dtype(ml_dtypes.float8_e8m0fnu),
+#         int(TensorProto.INT32),
+#         "TensorProto.FLOAT8E8M0",
+#     ),
+#     int(TensorProto.UINT2): TensorDtypeMap(
+#         np.dtype(ml_dtypes.uint2), int(TensorProto.INT32), "TensorProto.UINT2"
+#     ),
+#     int(TensorProto.INT2): TensorDtypeMap(
+#         np.dtype(ml_dtypes.int2), int(TensorProto.INT32), "TensorProto.INT2"
+#     ),
+# }
+
+
+def plc_type_from_dtype(dtype: str) -> str:
+    """Map data type strings to appropriate PLC data types."""
+    match dtype:
+        case "TensorProto.FLOAT":
+            return "REAL"
+        case "TensorProto.DOUBLE":
+            return "LREAL" # TODO: this might be Double or something else, seems to be different across PLCs
+        case "TensorProto.INT32":
+            return "DINT"
+        case "TensorProto.INT64":
+            return "LINT"
+        case _:
+            raise NotImplementedError(f"Data type {dtype} is not supported.")
 
 def generate_header(fb_name: str) -> STCode:
     """Generate function block header."""
@@ -21,9 +139,21 @@ def generate_footer() -> STCode:
 
 def generate_var_input(network: NetworkIR) -> STCode:
     """Generate VAR_INPUT section."""
+    if network.layers == []:
+        logging.error("Network has no layers defined.")
+        raise ValueError("Network has no layers defined.")
+    
+    first_layer = network.layers[0]
+    
+    if not hasattr(first_layer, "input_type"):
+        logging.error("First layer does not have input_type attribute.")
+        raise ValueError("First layer does not have input_type attribute.")
+
+    input_type = plc_type_from_dtype(first_layer.input_type)
+    
     return STCode.from_lines(
         "VAR_INPUT",
-        f"    input_data : ARRAY[0..{network.input_size-1}] OF REAL;",
+        f"    input_data : ARRAY[0..{network.input_size-1}] OF {input_type};",
         "END_VAR",
         "",
     )
@@ -31,9 +161,20 @@ def generate_var_input(network: NetworkIR) -> STCode:
 
 def generate_var_output(network: NetworkIR) -> STCode:
     """Generate VAR_OUTPUT section."""
+    if network.layers == []:
+        logging.error("Network has no layers defined.")
+        raise ValueError("Network has no layers defined.")
+
+    last_layer = network.layers[-1]
+    if not hasattr(last_layer, "output_type"):
+        logging.error("Last layer does not have output_type attribute.")
+        raise ValueError("Last layer does not have output_type attribute.")
+    
+    output_type = plc_type_from_dtype(last_layer.output_type)    
+
     return STCode.from_lines(
         "VAR_OUTPUT",
-        f"    output_data : ARRAY[0..{network.output_size-1}] OF REAL;",
+        f"    output_data : ARRAY[0..{network.output_size-1}] OF {output_type};",
         "END_VAR",
         "",
     )
@@ -54,6 +195,9 @@ def generate_reshape_code(
             "END_FOR;",
         )
 
+    logging.error(
+        "Reshape layer with different sizes is not implemented yet."
+    )
     raise NotImplementedError(
         "Reshape layer with different sizes is not implemented yet."
     )
@@ -61,43 +205,56 @@ def generate_reshape_code(
 def generate_layer_variables(layer) -> STCode:
     """Generate variable declarations for a single layer."""
     lines = [f"(* Layer {layer.layer_id} variables *)"]
+
+    if not hasattr(layer, "output_type"):
+        logging.error(f"Layer {layer.layer_id} does not have output_type attribute.")
+        raise ValueError(
+            f"Layer {layer.layer_id} does not have output_type attribute."
+        )
+    
+    plc_type = plc_type_from_dtype(layer.output_type)
+    weight_plc_type = "REAL" # Default
+    if hasattr(layer, "weight_type"):
+        weight_plc_type = plc_type_from_dtype(layer.weight_type)
+    
     if (
         isinstance(layer, MatMulLayer)
         or isinstance(layer, GemmLayer)
         or isinstance(layer, FusedGemmLayer)
     ):
         lines.append(
-            f"weights_{layer.layer_id} : ARRAY[0..{layer.input_size-1}, 0..{layer.output_size-1}] OF REAL;"
+            f"weights_{layer.layer_id} : ARRAY[0..{layer.input_size-1}, 0..{layer.output_size-1}] OF {weight_plc_type};"
         )
         if getattr(layer, "bias", None) is not None:
             lines.append(
-                f"bias_{layer.layer_id} : ARRAY[0..{layer.output_size-1}] OF REAL;"
+                f"bias_{layer.layer_id} : ARRAY[0..{layer.output_size-1}] OF {weight_plc_type};"
             )
         lines.append(
-            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
+            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF {plc_type};"
         )
     elif isinstance(layer, AddLayer):
         lines.append(
-            f"bias_{layer.layer_id} : ARRAY[0..{layer.output_size-1}] OF REAL;"
+            f"bias_{layer.layer_id} : ARRAY[0..{layer.output_size-1}] OF {weight_plc_type};"
         )
         lines.append(
-            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
+            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF {plc_type};"
         )
     elif isinstance(layer, ActivationLayer):
         lines.append(
-            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
+            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF {plc_type};"
         )
     elif isinstance(layer, ReshapeLayer):
         lines.append(
-            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
+            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF {plc_type};"
         )
     # TODO: quantize/dequantize layers....
     elif isinstance(layer, QuantizeLinearLayer) or isinstance(layer, DequantizeLinearLayer):
         lines.append(
-            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF REAL;"
+            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF {plc_type};"
         )
     # TODO: dropout layers, conv layers, etc.
     else:
+        logging.error(f"Layer type {type(layer)} is not supported.")
         raise NotImplementedError(
             f"Layer type {type(layer)} is not supported.")
     return STCode.from_lines(*lines)

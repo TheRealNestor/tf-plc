@@ -8,9 +8,12 @@ from typing import Dict
 import numpy as np
 from .onnx_model import ONNXModel
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def extract_common_layer_info(
-    layer: Dict, layer_id: int, analyzer: ONNXModel
+    layer: Dict, layer_id: int
 ) -> Dict:
     layer_name = layer.get("name") or f"{layer['op_type']}_{layer_id}"
 
@@ -20,7 +23,6 @@ def extract_common_layer_info(
         "op_type": layer["op_type"],
         "inputs": tuple(layer.get("inputs", ())),
         "outputs": tuple(layer.get("outputs", ())),
-        "attributes": layer.get("attributes", {}),
     }
 
 
@@ -58,7 +60,7 @@ def extract_type_info(layer: Dict, analyzer: ONNXModel) -> Dict:
 
 def create_layer_base(layer: Dict, layer_id: int, analyzer: ONNXModel) -> Dict:
     """Create base layer info with common fields populated"""
-    common_info = extract_common_layer_info(layer, layer_id, analyzer)
+    common_info = extract_common_layer_info(layer, layer_id)
     type_info = extract_type_info(layer, analyzer)
     return {**common_info, **type_info}
 
@@ -66,13 +68,17 @@ def create_layer_base(layer: Dict, layer_id: int, analyzer: ONNXModel) -> Dict:
 def calculate_sizes_from_tensor_info(layer: Dict, analyzer: ONNXModel) -> Tuple[int, int]:
     """Calculate input/output sizes from tensor info"""
     input_size = output_size = 1  
+    
     if hasattr(analyzer, 'tensor_info') and analyzer.tensor_info and layer.get('inputs'):
         input_info = analyzer.tensor_info.get(layer['inputs'][0])
         if input_info and input_info.get('shape'):
-            shape = [d for d in input_info['shape']
-                     if d > 0]  # TODO: Ignoring dynamic dims for now...
-            input_size = int(np.prod(shape)) if shape else 1
-            output_size = input_size  # Same size for most operations
+            # Filter out dynamic dimensions (strings, -1, 0)
+            shape = input_info['shape']
+            static_dims = [d for d in shape if isinstance(d, int) and d > 0]
+            input_size = int(np.prod(static_dims)) if static_dims else 1
+            output_size = input_size
+    
+
     return input_size, output_size
 
 
@@ -100,8 +106,8 @@ def extract_add_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarray]
     )
 
     if bias_tensor is None:
+        logger.error(f"Add layer {layer_id} missing required bias tensor")
         raise ValueError(f"Add layer {layer_id} missing required bias tensor")
-
 
     return AddLayer(**base_info, bias=bias_tensor, input_size=input_size, output_size=output_size)
 
@@ -116,6 +122,7 @@ def extract_matmul_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarr
     )
 
     if weight_tensor is None:
+        logger.error(f"MatMul layer {layer_id} missing required weight tensor")
         raise ValueError(
             f"MatMul layer {layer_id} missing required weight tensor")
 
@@ -141,6 +148,7 @@ def extract_gemm_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarray
                 bias_tensor = tensor
 
     if weight_tensor is None:
+        logger.error(f"Gemm layer {layer_id} missing required weight tensor")
         raise ValueError(
             f"Gemm layer {layer_id} missing required weight tensor")
 
@@ -178,6 +186,7 @@ def extract_fused_gemm_layer(
 
     attrs = layer.get("attributes", {})
     if weight_tensor is None or "activation" not in attrs:
+        logger.error(f"FusedGemm layer {layer_id} missing required weight tensor or activation attribute")
         raise ValueError(
             f"FusedGemm layer {layer_id} missing required weight tensor or activation attribute"
         )
@@ -259,6 +268,7 @@ def extract_reshape_layer(layer: Dict, layer_id: int, analyzer: ONNXModel) -> Re
     output_size = int(np.prod(output_shape)) if output_shape else input_size
 
     if output_size <= 0:
+        logger.error(f"Invalid output size for Reshape layer {layer_id}: {output_size}")
         raise ValueError(
             f"Invalid output size for Reshape layer {layer_id}: {output_size}")
 
@@ -284,6 +294,10 @@ LAYER_EXTRACTORS = {
 
 
 def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
+    """Convert ONNX model to intermediate representation"""
+
+    logger.info("Converting ONNX model to IR...")
+
     # Ensure tensor info is built
     analyzer._build_tensor_info()
 
@@ -292,8 +306,28 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
     input_shape = input_info["shape"]
     output_shape = output_info["shape"]
 
-    input_size = int(np.prod(input_shape))
-    output_size = int(np.prod(output_shape))
+    # Filter out dynamic dimensions (negative values or string placeholders)
+    def get_static_shape(shape):
+        """Extract only static (positive integer) dimensions from shape"""
+        static_dims = []
+        for dim in shape:
+            if isinstance(dim, int) and dim > 0:
+                static_dims.append(dim)
+            elif isinstance(dim, str):
+                # Skip string placeholders like 'unk__8'
+                continue
+            elif dim <= 0:
+                # Skip batch dimensions (-1) and other dynamic dims
+                continue
+        return static_dims
+
+    static_input_shape = get_static_shape(input_shape)
+    static_output_shape = get_static_shape(output_shape)
+    input_size = int(np.prod(static_input_shape)) if static_input_shape else 1
+    output_size = int(np.prod(static_output_shape)) if static_output_shape else 1
+
+    logger.debug(f"Input shape: {static_input_shape} -> static input shape -> size {input_size}")
+    logger.debug(f"Output shape: {static_output_shape} -> static output shape -> size {output_size}")
 
     ir_layers = []
     layer_id = 0
@@ -304,47 +338,56 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
         op_type = layer_dict["op_type"]
         extractor = LAYER_EXTRACTORS.get(op_type)
         layer = None
-        consumed = 1 # By default, each extractor consumes one layer
+        consumed = 1
 
         if extractor:
-            if op_type in ["MatMul"]:
-                layer = extractor(layer_dict, layer_id,
-                                  analyzer.weights, analyzer)
-            elif op_type in ["Add"]:
-                prev_layer = ir_layers[-1] if ir_layers else None
-                curr_input_size = prev_layer.output_size if prev_layer else input_size
-                curr_output_size = curr_input_size
-                layer = extractor(
-                    layer_dict, layer_id, analyzer.weights, curr_input_size, curr_output_size, analyzer
-                )
-            elif op_type in ["Gemm"]:
-                layer = extractor(layer_dict, layer_id,
-                                  analyzer.weights, analyzer)
-            elif op_type in ["FusedGemm"]:
-                layer = extractor(layer_dict, layer_id,
-                                  analyzer.weights, analyzer)
-            elif op_type in ["Relu", "Sigmoid", "Tanh", "Softmax"]:
-                prev_layer = ir_layers[-1] if ir_layers else None
-                curr_input_size = prev_layer.output_size if prev_layer else input_size
-                curr_output_size = curr_input_size
-                layer = extractor(layer_dict, layer_id,
-                                  curr_input_size, curr_output_size, analyzer)
-            elif op_type in ["QuantizeLinear"]:
-                layer = extractor(layer_dict, layer_id, analyzer)
-            elif op_type in ["DequantizeLinear"]:
-                layer = extractor(layer_dict, layer_id, analyzer)
-            elif op_type in ["Reshape"]:
-                layer = extractor(layer_dict, layer_id, analyzer)
-            else:
-                pass
+            try:
+                if op_type in ["MatMul"]:
+                    layer = extractor(layer_dict, layer_id, analyzer.weights, analyzer)
+                elif op_type in ["Add"]:
+                    prev_layer = ir_layers[-1] if ir_layers else None
+                    curr_input_size = (
+                        prev_layer.output_size if prev_layer else input_size
+                    )
+                    curr_output_size = curr_input_size
+                    layer = extractor(
+                        layer_dict,
+                        layer_id,
+                        analyzer.weights,
+                        curr_input_size,
+                        curr_output_size,
+                        analyzer,
+                    )
+                elif op_type in ["Gemm", "FusedGemm"]:
+                    layer = extractor(layer_dict, layer_id, analyzer.weights, analyzer)
+                elif op_type in ["Relu", "Sigmoid", "Tanh", "Softmax"]:
+                    prev_layer = ir_layers[-1] if ir_layers else None
+                    curr_input_size = (
+                        prev_layer.output_size if prev_layer else input_size
+                    )
+                    curr_output_size = curr_input_size
+                    layer = extractor(
+                        layer_dict,
+                        layer_id,
+                        curr_input_size,
+                        curr_output_size,
+                        analyzer,
+                    )
+                elif op_type in ["QuantizeLinear", "DequantizeLinear", "Reshape"]:
+                    layer = extractor(layer_dict, layer_id, analyzer)
 
-            if layer:
-                ir_layers.append(layer)
-                layer_id += 1
+                if layer:
+                    ir_layers.append(layer)
+                    layer_id += 1
+            except Exception as e:
+                logger.error(f"Failed to extract layer {layer_id} ({op_type}): {e}")
+                raise
         else:
-            print(f"[WARNING] Unsupported ONNX layer: {op_type}")
+            logger.warning(f"Unsupported ONNX layer type: {op_type}")
 
         idx += consumed
+
+    logger.info(f"Successfully converted {len(ir_layers)} layers to IR")
 
     return NetworkIR(
         input_size=input_size, output_size=output_size, layers=tuple(ir_layers)
