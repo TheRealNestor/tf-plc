@@ -6,7 +6,6 @@ This module is responsible for generating Structured Text (ST) code from the int
 
 from .types import *
 from .st_code import *
-import numpy as np
 
 import logging
 logger = logging.getLogger(__name__)
@@ -116,6 +115,9 @@ logger = logging.getLogger(__name__)
 
 def plc_type_from_dtype(dtype: str) -> str:
     """Map data type strings to appropriate PLC data types."""
+    if dtype is None:
+        raise ValueError("IR layer data type is None; tensor_info is incomplete.")
+
     match dtype:
         case "TensorProto.FLOAT":
             return "REAL"

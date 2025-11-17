@@ -62,63 +62,73 @@ class ONNXModel:
         # Refer to: https://onnx.ai/onnx/intro/concepts.html#element-type
         return onnx.helper.tensor_dtype_to_string(elem_type)
 
+    @staticmethod
+    def parse_value(value: onnx.ValueInfoProto) -> Dict[str, Any]:
+        """Extract dtype (as ONNX string) and shape from a ValueInfoProto."""
+        t = value.type.tensor_type
+        elem = t.elem_type
+
+        onnx_type = onnx.helper.tensor_dtype_to_string(elem)
+
+        shape = []
+        for d in t.shape.dim:
+            if d.dim_value > 0: # Fixed dimension
+                shape.append(d.dim_value)
+            elif d.dim_param: # Symbolic dimension
+                shape.append(str(d.dim_param))
+            else: # Unknown dimension
+                shape.append(None)
+
+        return {
+            "onnx_type": onnx_type,
+            "shape": shape,
+        }
+
     def _build_tensor_info(self):
-        """Build comprehensive tensor information from ONNX model by using ONNX inference engine."""
-        if not self.model:
-            return
+        """Build tensor_info, input_info, and output_info using ONNX shape inference."""
+        if self.model is None:
+            raise RuntimeError("Model not loaded.")
 
         try:
-            logger.debug("Running ONNX shape inference...")
-            inferred_model = onnx.shape_inference.infer_shapes(self.model)
-            # Update our model with the inferred one
-            self.model = inferred_model
-            self.graph = self.model.graph
-            logger.debug(f"Shape inference complete. value_info entries: {len(self.graph.value_info)}")
+            inferred = onnx.shape_inference.infer_shapes(self.model)
         except Exception as e:
-            logger.warning(f"Shape inference failed: {e}, continuing with original model.")
+            logger.warning(f"Shape inference failed: {e}. Using raw graph.")
+            inferred = self.model
 
         tensor_info = {}
 
-        # Process model inputs
-        for input_tensor in self.graph.input:
-            tensor_info[input_tensor.name] = {
-                'dtype': self.get_tensor_type_name(input_tensor.type.tensor_type.elem_type),
-                'shape': [dim.dim_value if dim.dim_value > 0 else dim.dim_param if dim.dim_param else -1 
-                        for dim in input_tensor.type.tensor_type.shape.dim]
-            }
+        # Inputs (excluding initializers)
+        initializer_names = {init.name for init in inferred.graph.initializer}
 
-        # Process model outputs
-        for output_tensor in self.graph.output:
-            tensor_info[output_tensor.name] = {
-                'dtype': self.get_tensor_type_name(output_tensor.type.tensor_type.elem_type),
-                'shape': [dim.dim_value if dim.dim_value > 0 else dim.dim_param if dim.dim_param else -1 
-                        for dim in output_tensor.type.tensor_type.shape.dim]
-            }
+        for v in inferred.graph.input:
+            if v.name not in initializer_names:
+                tensor_info[v.name] = self.parse_value(v)
 
-        # Process intermediate value_info (NOW POPULATED BY SHAPE INFERENCE!)
-        for value_info in self.graph.value_info:
-            tensor_info[value_info.name] = {
-                'dtype': self.get_tensor_type_name(value_info.type.tensor_type.elem_type),
-                'shape': [dim.dim_value if dim.dim_value > 0 else dim.dim_param if dim.dim_param else -1 
-                        for dim in value_info.type.tensor_type.shape.dim]
-            }
+        # Outputs
+        for v in inferred.graph.output:
+            tensor_info[v.name] = self.parse_value(v)
 
-        # Process initializers/weights (they also have type info)
-        for init in self.graph.initializer:
-            tensor_info[init.name] = {
-                'dtype': self.get_tensor_type_name(init.data_type),
-                'shape': list(init.dims)
-            }
+        # Intermediate tensors
+        for v in inferred.graph.value_info:
+            tensor_info[v.name] = self.parse_value(v)
 
+        # Fill member variables
         self.tensor_info = tensor_info
+        self.input_info = {
+            name: info for name, info in tensor_info.items()
+            if any(inp.name == name for inp in self.graph.input)
+        }
+        self.output_info = {
+            name: info for name, info in tensor_info.items()
+            if any(out.name == name for out in self.graph.output)
+        }
 
-        logger.info(f"Built tensor_info with {len(tensor_info)} tensors")
+        # Ensure layers are also analyzed once
+        if not self.layers:
+            self.analyze_layers()
+            self.extract_weights()
 
-        if logger.isEnabledFor(logging.DEBUG):
-            for name, info in list(tensor_info.items())[:15]:
-                logger.debug(f"  {name}: dtype={info['dtype']}, shape={info['shape']}")
-            if len(tensor_info) > 15:
-                logger.debug(f"  ... and {len(tensor_info) - 15} more")
+        logger.info(f"Extracted tensor info for {len(self.tensor_info)} tensors.")
 
     def extract_weights(self) -> Dict[str, np.ndarray]:
         """
@@ -151,6 +161,9 @@ class ONNXModel:
         if not self.model:
             logger.error("Model not loaded. Call load_model() first.")
             return []
+
+        if self.layers:
+            return self.layers
 
         layers = []
 
@@ -192,6 +205,9 @@ class ONNXModel:
             logger.error("Model not loaded. Call load_model() first.")
             return {}, {}
 
+        if self.input_info and self.output_info:
+            return self.input_info, self.output_info
+
         input_info = {}
         for input_tensor in self.graph.input:
             if input_tensor.name not in [init.name for init in self.graph.initializer]:
@@ -228,12 +244,12 @@ class ONNXModel:
     def print_model_summary(self):
         """Print a comprehensive summary of the model."""
         if not self.model:
-            print("Model not loaded. Call load_model() first.")
+            logger.error("Model not loaded. Call load_model() first.")
             return
 
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("ONNX MODEL SUMMARY")
-        print("="*60)
+        print("=" * 60)
 
         print(f"Model path: {self.model_path}")
         print(f"IR Version: {self.model.ir_version}")
@@ -242,35 +258,32 @@ class ONNXModel:
         input_info, output_info = self.get_input_output_info()
         print(f"\nInputs ({len(input_info)}):")
         for name, info in input_info.items():
-            print(f"  - {name}: shape={info['shape']}, dtype={info['dtype']}")
+            shape = info.get("shape")
+            # Prefer onnx_type (string) if available, else fallback to dtype (int enum)
+            dtype = info.get("onnx_type", info.get("dtype"))
+            print(f"  - {name}: shape={shape}, dtype={dtype}")
 
         print(f"\nOutputs ({len(output_info)}):")
         for name, info in output_info.items():
-            print(f"  - {name}: shape={info['shape']}, dtype={info['dtype']}")
+            shape = info.get("shape")
+            dtype = info.get("onnx_type", info.get("dtype"))
+            print(f"  - {name}: shape={shape}, dtype={dtype}")
 
         layers = self.analyze_layers()
         print(f"\nLayers ({len(layers)}):")
-        layer_types = {}
+        layer_types: dict[str, int] = {}
         for layer in layers:
-            op_type = layer['op_type']
-            layer_types[op_type] = layer_types.get(op_type, 0) + 1
-            print(f"  - {layer['name']}: {op_type}")
+            op = layer["op_type"]
+            layer_types[op] = layer_types.get(op, 0) + 1
+            print(
+                f"  - {layer['name'] or '<unnamed>'}: "
+                f"type={op}, inputs={layer['inputs']}, outputs={layer['outputs']}"
+            )
 
-        print(f"\nLayer type counts:")
-        for op_type, count in layer_types.items():
-            print(f"  - {op_type}: {count}")
-
-        weights = self.extract_weights()
-        print(f"\nWeights/Parameters ({len(weights)}):")
-        total_params = 0
-        for name, weight in weights.items():
-            param_count = np.prod(weight.shape)
-            total_params += param_count
-            print(f"  - {name}: shape={weight.shape}, params={param_count}")
-
-        print(f"\nTotal parameters: {total_params:,}")
-        print("="*60)
-
+        print("\nLayer type counts:")
+        for op, count in sorted(layer_types.items()):
+            print(f"  {op}: {count}")
+        print("=" * 60)
 
 def load_and_analyze_onnx_model(model_path: str | Path) -> ONNXModel:
     """
@@ -285,6 +298,9 @@ def load_and_analyze_onnx_model(model_path: str | Path) -> ONNXModel:
     analyzer = ONNXModel(model_path)
     
     if analyzer.load_model():
+        analyzer._build_tensor_info()
+        analyzer.extract_weights()
+        analyzer.analyze_layers()
         analyzer.print_model_summary()
         return analyzer
     else:
@@ -333,6 +349,8 @@ if __name__ == "__main__":
 
     analyzer = load_and_analyze_onnx_model(model_path)
     analyzer._build_tensor_info()  
+
+
     if analyzer:
         logger.info(f"\nExtracted {len(analyzer.weights)} weight tensors")
         logger.info(f"Found {len(analyzer.layers)} layers")

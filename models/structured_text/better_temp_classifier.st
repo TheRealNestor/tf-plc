@@ -55,8 +55,8 @@ VAR
     layer_9_output : ARRAY[0..2] OF REAL;
 
     (* Temporary computation variables *)
-    i : INT;
-    j : INT;
+    i : DINT;
+    j : DINT;
     sum : REAL;
     max_val : REAL;
     exp_sum : REAL;

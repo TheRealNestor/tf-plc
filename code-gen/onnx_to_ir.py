@@ -12,6 +12,33 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def resolve_static_dims(shape, tensor_name):
+    """
+    Extract static positive integer dimensions. We cannot feasibly handle dynamic/symbolic dims in PLC.
+    Raise failure if NO static dims exist or shape is purely symbolic.
+    """
+    static = [d for d in shape if isinstance(d, int) and d > 0]
+
+    if not static:
+        raise ValueError(
+            f"Cannot determine static size of tensor '{tensor_name}'. "
+            f"Shape={shape}. "
+            f"This model uses symbolic or dynamic dimensions "
+            f"which PLC Structured Text cannot represent."
+        )
+
+    return static
+
+
+def static_product(shape, tensor_name):
+    """
+    Compute product of static dims only.
+    Raises an error if symbolic or unknown dims prevent determining a static size.
+    """
+    static = resolve_static_dims(shape, tensor_name)
+    return int(np.prod(static))
+
+
 def extract_common_layer_info(
     layer: Dict, layer_id: int
 ) -> Dict:
@@ -28,32 +55,35 @@ def extract_common_layer_info(
 
 def extract_type_info(layer: Dict, analyzer: ONNXModel) -> Dict:
     """Extract type and shape information for layer inputs/outputs"""
-    type_info = {}
+    type_info: Dict[str, object] = {}
 
-    if hasattr(analyzer, 'tensor_info') and analyzer.tensor_info:
-        # Get input tensor info (first input is usually the data tensor)
-        if layer.get('inputs'):
-            input_name = layer['inputs'][0]
-            if input_name in analyzer.tensor_info:
-                info = analyzer.tensor_info[input_name]
-                shape = info.get('shape', [])
-                if shape:
-                    type_info.update({
-                        'input_type': info.get('dtype'),
-                        'input_shape': tuple(shape) if shape else None,
-                    })
+    if layer.get("inputs"):
+        input_name = layer["inputs"][0]
+        if input_name in analyzer.tensor_info:
+            info = analyzer.tensor_info[input_name]
+            shape = info.get("shape", [])
+            if shape:
+                type_info["input_type"] = info.get("onnx_type")
+                type_info["input_shape"] = tuple(shape)
+        else:
+            logger.warning(
+                f"Missing tensor_info for input '{input_name}' of layer "
+                f"{layer.get('name', layer['op_type'])}"
+            )
 
-        # Get output tensor info
-        if layer.get('outputs'):
-            output_name = layer['outputs'][0]
-            if output_name in analyzer.tensor_info:
-                info = analyzer.tensor_info[output_name]
-                shape = info.get('shape', [])
-                if shape:
-                    type_info.update({
-                        'output_type': info.get('dtype'),
-                        'output_shape': tuple(shape) if shape else None,
-                    })
+    if layer.get("outputs"):
+        output_name = layer["outputs"][0]
+        if output_name in analyzer.tensor_info:
+            info = analyzer.tensor_info[output_name]
+            shape = info.get("shape", [])
+            if shape:
+                type_info["output_type"] = info.get("onnx_type")
+                type_info["output_shape"] = tuple(shape)
+        else:
+            logger.warning(
+                f"Missing tensor_info for output '{output_name}' of layer "
+                f"{layer.get('name', layer['op_type'])}"
+            )
 
     return type_info
 
@@ -63,24 +93,6 @@ def create_layer_base(layer: Dict, layer_id: int, analyzer: ONNXModel) -> Dict:
     common_info = extract_common_layer_info(layer, layer_id)
     type_info = extract_type_info(layer, analyzer)
     return {**common_info, **type_info}
-
-
-def calculate_sizes_from_tensor_info(layer: Dict, analyzer: ONNXModel) -> Tuple[int, int]:
-    """Calculate input/output sizes from tensor info"""
-    input_size = output_size = 1  
-    
-    if hasattr(analyzer, 'tensor_info') and analyzer.tensor_info and layer.get('inputs'):
-        input_info = analyzer.tensor_info.get(layer['inputs'][0])
-        if input_info and input_info.get('shape'):
-            # Filter out dynamic dimensions (strings, -1, 0)
-            shape = input_info['shape']
-            static_dims = [d for d in shape if isinstance(d, int) and d > 0]
-            input_size = int(np.prod(static_dims)) if static_dims else 1
-            output_size = input_size
-    
-
-    return input_size, output_size
-
 
 def extract_activation_layer(
         layer: Dict, layer_id: int, input_size: int, output_size: int, analyzer: ONNXModel
@@ -207,9 +219,26 @@ def extract_fused_gemm_layer(
         transB=attrs.get("transB", False),
     )
 
-def extract_quantize_linear_layer(layer: Dict, layer_id: int, analyzer: ONNXModel) -> QuantizeLinearLayer:
+
+def extract_quantize_linear_layer(
+    layer: Dict, layer_id: int, analyzer: ONNXModel
+) -> QuantizeLinearLayer:
     base_info = create_layer_base(layer, layer_id, analyzer)
-    input_size, output_size = calculate_sizes_from_tensor_info(layer, analyzer)
+
+    # QuantizeLinear(input, scale, zero_point)
+    input_name = layer["inputs"][0]
+
+    if input_name not in analyzer.tensor_info:
+        raise ValueError(
+            f"QuantizeLinear {layer_id}: Missing tensor info for input '{input_name}'. "
+            f"Cannot determine static shape."
+        )
+
+    input_shape = analyzer.tensor_info[input_name]["shape"]
+    input_size = static_product(input_shape, input_name)
+
+    # QuantizeLinear preserves the tensor shape
+    output_size = input_size
     attrs = layer.get("attributes", {})
 
     return QuantizeLinearLayer(
@@ -222,9 +251,23 @@ def extract_quantize_linear_layer(layer: Dict, layer_id: int, analyzer: ONNXMode
     )
 
 
-def extract_dequantize_linear_layer(layer: Dict, layer_id: int, analyzer: ONNXModel) -> DequantizeLinearLayer:
+def extract_dequantize_linear_layer(
+    layer: Dict, layer_id: int, analyzer: ONNXModel
+) -> DequantizeLinearLayer:
     base_info = create_layer_base(layer, layer_id, analyzer)
-    input_size, output_size = calculate_sizes_from_tensor_info(layer, analyzer)
+
+    input_name = layer["inputs"][0]
+
+    if input_name not in analyzer.tensor_info:
+        raise ValueError(
+            f"DequantizeLinear {layer_id}: Missing tensor info for input '{input_name}'. "
+            f"Cannot determine static shape."
+        )
+
+    input_shape = analyzer.tensor_info[input_name]["shape"]
+    input_size = static_product(input_shape, input_name)
+    output_size = input_size
+
     attrs = layer.get("attributes", {})
 
     return DequantizeLinearLayer(
@@ -237,46 +280,69 @@ def extract_dequantize_linear_layer(layer: Dict, layer_id: int, analyzer: ONNXMo
     )
 
 
-def extract_reshape_layer(layer: Dict, layer_id: int, analyzer: ONNXModel) -> ReshapeLayer:
-    # Use create_layer_base like others
+def extract_reshape_layer(
+    layer: Dict, layer_id: int, analyzer: ONNXModel
+) -> ReshapeLayer:
     base_info = create_layer_base(layer, layer_id, analyzer)
 
+    # The reshape target is usually a constant initializer
     shape_input_name = layer["inputs"][1]
     if shape_input_name in analyzer.weights:
-        raw_shape = analyzer.weights[shape_input_name]
-        target_shape = tuple(int(x) for x in raw_shape)
+        raw_target = analyzer.weights[shape_input_name]
+        target_shape = tuple(int(dim) for dim in raw_target)
     else:
-        target_shape = tuple()
+        raise ValueError(
+            f"Reshape layer {layer_id}: Target shape tensor '{shape_input_name}' "
+            f"is dynamic or missing. PLC code requires static reshape targets."
+        )
 
     input_name = layer["inputs"][0]
-    input_info = analyzer.input_info.get(input_name, None)
-    if input_info:
-        input_shape = tuple(input_info["shape"])
-        input_size = int(np.prod([d for d in input_shape if d > 0]))
-    else:
-        input_shape = tuple()
-        input_size = int(np.prod(target_shape)) if target_shape else 0
+    input_info = analyzer.tensor_info.get(input_name)
+    if not input_info:
+        raise ValueError(
+            f"Reshape layer {layer_id}: Cannot determine input tensor info "
+            f"for '{input_name}'."
+        )
 
-    # Handle -1 in target_shape (infer dimension)
-    if target_shape and -1 in target_shape:
-        known = [d for d in target_shape if d > 0]
-        known_prod = int(np.prod(known)) if known else 1
-        inferred = int(input_size // known_prod) if known_prod != 0 else 0
+    input_shape = input_info["shape"]
+    input_size = static_product(input_shape, input_name)
+
+    if -1 in target_shape:
+        known_dims = [d for d in target_shape if isinstance(d, int) and d > 0]
+        known_prod = np.prod(known_dims) if known_dims else 1
+
+        if known_prod == 0:
+            raise ValueError(
+                f"Reshape layer {layer_id}: Invalid known dims in target shape {target_shape}"
+            )
+
+        inferred = input_size // known_prod
         target_shape = tuple(inferred if d == -1 else d for d in target_shape)
 
-    output_shape = target_shape if target_shape else input_shape
-    output_size = int(np.prod(output_shape)) if output_shape else input_size
-
-    if output_size <= 0:
-        logger.error(f"Invalid output size for Reshape layer {layer_id}: {output_size}")
+    # Now validate the final target shape
+    if any(d <= 0 for d in target_shape):
         raise ValueError(
-            f"Invalid output size for Reshape layer {layer_id}: {output_size}")
+            f"Reshape layer {layer_id}: Resolved target shape still contains "
+            f"symbolic or invalid dims: {target_shape}"
+        )
+
+    output_size = int(np.prod(target_shape))
+
+    if output_size != input_size:
+        raise ValueError(
+            f"Reshape layer {layer_id}: Cannot reshape tensor '{input_name}' "
+            f"from shape {input_shape} (size={input_size}) "
+            f"to target shape {target_shape} (size={output_size}). "
+            f"ONNX requires reshape() to preserve total size, but the dimensions "
+            f"do not match. This is not a symbolic-dim error; it is a size mismatch."
+        )
 
     return ReshapeLayer(
-        **base_info,  # Use base_info instead of common_info + type_info
+        **base_info,
         input_size=input_size,
         output_size=output_size,
     )
+
 
 LAYER_EXTRACTORS = {
     "MatMul": extract_matmul_layer,
@@ -299,35 +365,27 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
     logger.info("Converting ONNX model to IR...")
 
     # Ensure tensor info is built
-    analyzer._build_tensor_info()
+    if not analyzer.tensor_info or not analyzer.input_info or not analyzer.output_info:
+        logger.debug("tensor_info missing; rebuilding...")
+        analyzer._build_tensor_info()
 
-    input_info = list(analyzer.input_info.values())[0]
-    output_info = list(analyzer.output_info.values())[0]
+    logger.debug(f"Available tensor_info keys: {list(analyzer.tensor_info.keys())}")
+
+    input_name = list(analyzer.input_info.keys())[0]
+    output_name = list(analyzer.output_info.keys())[0]
+
+    input_info = analyzer.input_info[input_name]
+    output_info = analyzer.output_info[output_name]
+
     input_shape = input_info["shape"]
     output_shape = output_info["shape"]
 
-    # Filter out dynamic dimensions (negative values or string placeholders)
-    def get_static_shape(shape):
-        """Extract only static (positive integer) dimensions from shape"""
-        static_dims = []
-        for dim in shape:
-            if isinstance(dim, int) and dim > 0:
-                static_dims.append(dim)
-            elif isinstance(dim, str):
-                # Skip string placeholders like 'unk__8'
-                continue
-            elif dim <= 0:
-                # Skip batch dimensions (-1) and other dynamic dims
-                continue
-        return static_dims
+    input_size = static_product(input_shape, input_name)
+    output_size = static_product(output_shape, output_name)
 
-    static_input_shape = get_static_shape(input_shape)
-    static_output_shape = get_static_shape(output_shape)
-    input_size = int(np.prod(static_input_shape)) if static_input_shape else 1
-    output_size = int(np.prod(static_output_shape)) if static_output_shape else 1
+    logger.debug(f"Static model input size = {input_size}, from shape {input_shape}")
+    logger.debug(f"Static model output size = {output_size}, from shape {output_shape}")
 
-    logger.debug(f"Input shape: {static_input_shape} -> static input shape -> size {input_size}")
-    logger.debug(f"Output shape: {static_output_shape} -> static output shape -> size {output_size}")
 
     ir_layers = []
     layer_id = 0
