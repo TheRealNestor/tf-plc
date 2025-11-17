@@ -22,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description="Optimize an ONNX model.")
     parser.add_argument("--input", "-i", required=False, help="Path to the input ONNX model file.")
     parser.add_argument("--output", "-o", required=False, help="Path to the output ONNX model file.")
-    parser.add_argument("--model-dir", "-d", default="models/onnx/", help="Directory containing ONNX models")
+    parser.add_argument("--model-dir", "-d", default="", help="Directory containing ONNX models")
 
     args = parser.parse_args()
     
