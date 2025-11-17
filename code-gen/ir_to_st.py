@@ -178,31 +178,23 @@ def generate_var_output(network: NetworkIR) -> STCode:
 
 
 def generate_weight_constant(layer) -> STCode:
-    """Generate weight constant declaration for a layer."""
+    """Generate weight constant declaration for a layer as flattened 1D array."""
     weight_name = f"weights_{layer.layer_id}"
     weight_type = plc_type_from_dtype(layer.input_type)
 
-    builder = STCodeBuilder()
-    builder.add_line(
-        f"{weight_name} : ARRAY[0..{layer.input_size-1}, 0..{layer.output_size-1}] OF {weight_type} := ["
+    total_size = layer.input_size * layer.output_size
+    flat_weights = layer.weights.flatten()
+    weight_values = ", ".join(f"{val:.6f}" for val in flat_weights)
+
+    return STCode.from_lines(
+        f"{weight_name} : ARRAY[0..{total_size-1}] OF {weight_type} := [{weight_values}];",
     )
-
-    with builder.indent():
-        for i in range(layer.weights.shape[0]):
-            row_values = ", ".join(
-                f"{layer.weights[i, j]:.6f}" for j in range(layer.weights.shape[1])
-            )
-            suffix = "," if i < layer.weights.shape[0] - 1 else ""
-            builder.add_line(f"[{row_values}]{suffix}")
-
-    builder.add_line("];")
-    return builder.build()
 
 
 def generate_bias_constant(layer) -> STCode:
     """Generate bias constant declaration for a layer."""
     bias_name = f"bias_{layer.layer_id}"
-    bias_type = plc_type_from_dtype(layer.input_type)
+    bias_type = plc_type_from_dtype(layer.output_type)
     bias_values = ", ".join(f"{layer.bias[j]:.6f}" for j in range(layer.bias.shape[0]))
 
     return STCode.from_lines(
@@ -253,8 +245,8 @@ def generate_var_section(network: NetworkIR) -> STCode:
     # Temporary computation variables
     code += STCode.from_lines(
         "    (* Temporary computation variables *)",
-        "    i : INT;",
-        "    j : INT;",
+        "    i : DINT;",
+        "    j : DINT;",
         "    sum : REAL;",
     )
 
@@ -351,8 +343,9 @@ def generate_matmul_code(layer: MatMulLayer, input_var: str, output_var: str) ->
         builder.add_line("sum := 0.0;")
         builder.add_line(f"FOR i := 0 TO {layer.input_size-1} DO")
         with builder.indent():
+            # Use flattened array indexing: weights[i * output_size + j]
             builder.add_line(
-                f"sum := sum + {input_var}[i] * weights_{layer.layer_id}[i,j];"
+                f"sum := sum + {input_var}[i] * weights_{layer.layer_id}[i * {layer.output_size} + j];"
             )
         builder.add_line("END_FOR;")
         builder.add_line(f"{output_var}[j] := sum;")
@@ -371,8 +364,9 @@ def generate_gemm_code(layer: GemmLayer, input_var: str, output_var: str) -> STC
         builder.add_line("sum := 0.0;")
         builder.add_line(f"FOR i := 0 TO {layer.input_size-1} DO")
         with builder.indent():
+            # Use flattened array indexing: weights[i * output_size + j]
             builder.add_line(
-                f"sum := sum + {input_var}[i] * weights_{layer.layer_id}[i,j];"
+                f"sum := sum + {input_var}[i] * weights_{layer.layer_id}[i * {layer.output_size} + j];"
             )
         builder.add_line("END_FOR;")
 
@@ -456,7 +450,7 @@ def generate_layer_computation(layer, input_var: str, output_var: str) -> STCode
         return STCode.from_lines(
             f"(* Layer {layer.layer_id}: Unsupported layer type {type(layer).__name__} *)"
         )
-                                                                 
+
 
 def generate_forward_pass(network: NetworkIR) -> STCode:
     """Generate complete forward pass computation."""
@@ -494,4 +488,3 @@ def generate_function_block(
 
     logger.info(f"Generated {len(code.lines)} lines of ST code.")
     return code
-
