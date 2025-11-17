@@ -4,7 +4,7 @@ Type descriptions related to the neural network.
 
 import numpy as np
 from typing import Optional, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 
