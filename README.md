@@ -38,10 +38,9 @@ This project contains utilities to:
    python -m venv .venv
    .venv\Scripts\activate
 
-2. Install dependencies:
-   pip install numpy onnx
-
-(If this project includes a requirements file, use `pip install -r requirements.txt`.)
+2. Install project
+    - As editable (developer mode): `pip install -e .`
+    - Normal install: `pip install .`
 
 ## Usage tips
 
