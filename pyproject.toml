@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tf-plc"
+version = "0.0.1"
+dependencies = [
+    "numpy==1.24.3",
+    "matplotlib",
+    "tensorflow==2.15.0",
+    "tqdm",
+    "pandas",
+    "onnx==1.15.0",
+    "tf2onnx==1.16.1",
+    "onnxruntime",
+]
+requires-python = ">=3.10"
+authors = [
+    {name = "Nikolaj Kühne Jakobsen"},
+    {name = "Krisitan Dueholm Hill"},
+    {name = "Firas Saleh"},
+]
+description = "Tool suite for converting Tensorflow models to IEC 61131-3 Structured Text"
