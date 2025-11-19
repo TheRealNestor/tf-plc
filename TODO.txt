@@ -1,6 +1,3 @@
-- Create a working tensorflow model in python (which we can use as example)
-- Update typing in ONNX/IR/PLC. Maybe helpful to introduce a baselayer type that can be inherited from. Most layers are very similar: names, ...
-- Verify that new refactor still works in straton + openplc
 - dont hardcode real type everywhere in code gen, particularly when quantizing and seemingly scaling. What is the saturation?
 - ONNX: inputs like const_fold_opt_36. How to handle these?
 - Add Conv layers

@@ -1,8 +1,0 @@
-
-
-
-
-StratonPLC:
-
-- Additionally, you can specify an initial value for single variables … The initial value must be a valid constant expression that fits the data type.
-    So cannot initialize constant matrices?
