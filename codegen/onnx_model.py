@@ -322,7 +322,7 @@ if __name__ == "__main__":
         format="%(levelname)s: %(message)s"
     )    
 
-    models_dir = Path("models") / "onnx"
+    models_dir = Path("examples") / "models" / "onnx"
     
     if not models_dir.exists():
         logger.error(f"ONNX models directory not found: {models_dir}")

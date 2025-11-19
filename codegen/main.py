@@ -58,7 +58,7 @@ def generate_st_from_onnx_file(
         code = onnx_to_structured_text(analyzer, fb_name=fb_name, openplc=openplc)
 
         if output_path is None:
-            st_output_dir = Path("models") / "structured_text"
+            st_output_dir = Path("examples") / "models" / "structured_text"
             st_output_dir.mkdir(parents=True, exist_ok=True)
             output_path = st_output_dir / f"{onnx_path.stem}.st"
 
