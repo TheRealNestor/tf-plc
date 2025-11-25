@@ -444,12 +444,12 @@ def generate_layer_computation(layer, input_var: str, output_var: str) -> STCode
         return generate_matmul_code(layer, input_var, output_var)
     elif isinstance(layer, AddLayer):
         return generate_add_code(layer, input_var, output_var)
+    elif isinstance(layer, FusedGemmLayer):
+        return generate_fused_gemm_code(layer, input_var, output_var)
     elif isinstance(layer, GemmLayer):
         return generate_gemm_code(layer, input_var, output_var)
     elif isinstance(layer, ReshapeLayer):
         return generate_reshape_code(layer, input_var, output_var)
-    elif isinstance(layer, FusedGemmLayer):
-        return generate_fused_gemm_code(layer, input_var, output_var)
     elif isinstance(layer, ActivationLayer):
         return generate_activation_layer_code(layer, input_var, output_var)
     else:

@@ -179,6 +179,7 @@ def extract_gemm_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarray
     input_size, output_size = weight_tensor.shape
     attrs = layer.get("attributes", {})
 
+    # TODO: Clean this code up (duplicated for fused_gemm). I'm not sure this should be necessary.
     # Infer output type/shape from input if missing
     output_name = layer["outputs"][0]
     if output_name not in analyzer.tensor_info:
@@ -499,6 +500,7 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
 
     logger.info(f"Successfully converted {len(ir_layers)} layers to IR")
 
-    return NetworkIR(
-        input_size=input_size, output_size=output_size, layers=tuple(ir_layers)
-    )
+    network = NetworkIR(input_size = input_size, output_size = output_size, layers=tuple(ir_layers))
+    logger.info(network)
+
+    return network
