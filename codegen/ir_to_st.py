@@ -438,27 +438,28 @@ def generate_reshape_code(
     return builder.build()
 
 
+# Mapping from layer type to code generator. 
+LAYER_CODE_GENERATORS = {
+    MatMulLayer: generate_matmul_code,
+    AddLayer: generate_add_code,
+    GemmLayer: generate_gemm_code,
+    FusedGemmLayer: generate_fused_gemm_code,
+    ReshapeLayer: generate_reshape_code,
+    ActivationLayer: generate_activation_layer_code
+}
+
+
 def generate_layer_computation(layer, input_var: str, output_var: str) -> STCode:
     """Generate computation code for a single layer."""
-    if isinstance(layer, MatMulLayer):
-        return generate_matmul_code(layer, input_var, output_var)
-    elif isinstance(layer, AddLayer):
-        return generate_add_code(layer, input_var, output_var)
-    elif isinstance(layer, FusedGemmLayer):
-        return generate_fused_gemm_code(layer, input_var, output_var)
-    elif isinstance(layer, GemmLayer):
-        return generate_gemm_code(layer, input_var, output_var)
-    elif isinstance(layer, ReshapeLayer):
-        return generate_reshape_code(layer, input_var, output_var)
-    elif isinstance(layer, ActivationLayer):
-        return generate_activation_layer_code(layer, input_var, output_var)
-    else:
-        logger.warning(
-            f"Layer type {type(layer).__name__} is not implemented for code generation."
-        )
-        return STCode.from_lines(
-            f"(* Layer {layer.layer_id}: Unsupported layer type {type(layer).__name__} *)"
-        )
+    for layer_type in type(layer).__mro__:
+        if layer_type in LAYER_CODE_GENERATORS:
+            return LAYER_CODE_GENERATORS[layer_type](layer, input_var, output_var)
+        
+    # no matching code generators:
+    logger.error(
+        f"Layer type {type(layer).__name__} has no matching code generator."
+    )
+    raise NotImplementedError(f"No code generator for layer type: {type(layer).__name__}")
 
 
 def generate_forward_pass(network: NetworkIR) -> STCode:
