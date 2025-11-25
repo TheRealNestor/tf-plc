@@ -1,0 +1,6 @@
+Shape (and Type) Inference
+Knowing the shapes of results is not necessary to execute an ONNX graph but this information can be used to make it faster. If you have the following graph:
+
+Add(x, y) -> z
+Abs(z) -> w
+If x and y have the same shape, then z and w also have the same shape. Knowing that, it is possible to reuse the buffer allocated for z, to compute the absolute value w inplace. Shape inference helps the runtime to manage the memory and therefore to be more efficient.

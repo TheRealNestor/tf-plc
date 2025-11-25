@@ -29,7 +29,6 @@ def resolve_static_dims(shape, tensor_name):
 
     return static
 
-
 def static_product(shape, tensor_name):
     """
     Compute product of static dims only.
@@ -59,6 +58,19 @@ def extract_type_info(layer: Dict, analyzer: ONNXModel) -> Dict:
 
     if layer.get("inputs"):
         input_name = layer["inputs"][0]
+
+        # TODO: remove this, which was for debugging purposes.
+        if not input_name in analyzer.tensor_info:
+            logger.warning(
+                
+                f"Input '{input_name}' not found in tensor_info for layer "
+                f"{layer.get('name', layer['op_type'])}"
+            )
+            # log the name mismatch
+            logger.warning(
+                f"input_name: {input_name}..."
+                f"analyzer tensor info: {analyzer.tensor_info}"
+            )
         if input_name in analyzer.tensor_info:
             info = analyzer.tensor_info[input_name]
             shape = info.get("shape", [])
@@ -167,10 +179,29 @@ def extract_gemm_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarray
     input_size, output_size = weight_tensor.shape
     attrs = layer.get("attributes", {})
 
+    # Infer output type/shape from input if missing
+    output_name = layer["outputs"][0]
+    if output_name not in analyzer.tensor_info:
+        logger.debug(f"Inferring tensor_info for Gemm output '{output_name}'")
+        input_name = layer["inputs"][0]
+        if input_name in analyzer.tensor_info:
+            input_info = analyzer.tensor_info[input_name]
+            analyzer.tensor_info[output_name] = {
+                "onnx_type": input_info.get("onnx_type", "TensorProto.FLOAT"),
+                "shape": [
+                    input_info["shape"][0] if input_info["shape"] else "unk",
+                    output_size,
+                ],
+            }
+            base_info["output_type"] = analyzer.tensor_info[output_name]["onnx_type"]
+            base_info["output_shape"] = tuple(
+                analyzer.tensor_info[output_name]["shape"]
+            )
+
     return GemmLayer(
         **base_info,
-        weights=weight_tensor,      
-        bias=bias_tensor,           
+        weights=weight_tensor,
+        bias=bias_tensor,
         input_size=input_size,
         output_size=output_size,
         alpha=attrs.get("alpha", 1.0),
@@ -184,9 +215,8 @@ def extract_fused_gemm_layer(
     layer: Dict, layer_id: int, weights: Dict[str, np.ndarray], analyzer: ONNXModel
 ) -> FusedGemmLayer:
     base_info = create_layer_base(
-        layer, layer_id, analyzer)  # Use create_layer_base
+        layer, layer_id, analyzer)
 
-    # Find weight and bias tensors
     weight_tensor = bias_tensor = None
     for name in layer["inputs"]:
         if name in weights:
@@ -206,8 +236,30 @@ def extract_fused_gemm_layer(
     input_size, output_size = weight_tensor.shape
     activation_type = ActivationType[attrs["activation"].upper()]
 
+    # Fusing layers might explicitly require updating the tensor_info like this (as opposed to just returning the layer)
+    output_name = layer["outputs"][0]
+    if output_name not in analyzer.tensor_info:
+        logger.debug(f"Inferring tensor_info for FusedGemm output '{output_name}'")
+        # Get input tensor info
+        input_name = layer["inputs"][0]
+        if input_name in analyzer.tensor_info:
+            input_info = analyzer.tensor_info[input_name]
+            # Output has same type as input, but different shape
+            analyzer.tensor_info[output_name] = {
+                "onnx_type": input_info.get("onnx_type", "TensorProto.FLOAT"),
+                "shape": [
+                    input_info["shape"][0] if input_info["shape"] else "unk",
+                    output_size,
+                ],
+            }
+            # Update base_info with inferred output type/shape
+            base_info["output_type"] = analyzer.tensor_info[output_name]["onnx_type"]
+            base_info["output_shape"] = tuple(
+                analyzer.tensor_info[output_name]["shape"]
+            )
+
     return FusedGemmLayer(
-        **base_info,  # Use base_info instead of common_info + type_info
+        **base_info,
         weights=weight_tensor,
         bias=bias_tensor,
         activation=activation_type,

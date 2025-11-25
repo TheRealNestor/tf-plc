@@ -204,11 +204,14 @@ def generate_bias_constant(layer) -> STCode:
     )
 
 
+
+# TODO: might need to generate constats for const_fold_opt tensors as well here.
 def generate_constants_section(network: NetworkIR) -> STCode:
     """Generate VAR CONSTANT section (weights, biases, ...)."""
     code = STCode.from_lines("VAR CONSTANT")
 
     for layer in network.layers:
+        # TODO: Might be able to simplify this for layer types that inherit from LinearLayer
         if isinstance(layer, (MatMulLayer, GemmLayer, FusedGemmLayer)):
             code += generate_weight_constant(layer).indent()
 
@@ -220,6 +223,10 @@ def generate_constants_section(network: NetworkIR) -> STCode:
         elif isinstance(layer, AddLayer):
             code += generate_bias_constant(layer).indent()
             code += STCode.blank_line()
+
+        elif isinstance(layer, ConstFoldOptLayer):
+            # TODO: implement this.
+            pass
 
     code += STCode.from_lines("END_VAR", "")
     return code

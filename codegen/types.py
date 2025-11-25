@@ -40,9 +40,13 @@ class ActivationLayer(BaseLayer):
 
 
 @dataclass(frozen=True, kw_only=True)
+class ConstFoldOptLayer(BaseLayer):
+    """Represents a constant folding optimization layer"""
+    folded_tensor: np.ndarray
+
+@dataclass(frozen=True, kw_only=True)
 class LinearLayer(BaseLayer):
     """Base class for layers with weights and biases"""
-
     weights: np.ndarray
     bias: Optional[np.ndarray] = None # Some linear layers may have bias
 
@@ -74,7 +78,7 @@ class AddLayer(BaseLayer):
 @dataclass(frozen=True, kw_only=True)
 class ReshapeLayer(BaseLayer):
     """Represents an ONNX Reshape layer"""
-    # TODO: I think I need to add additional information here...
+    # I think we have enough information from baselayer to define the reshape layer
     pass
 
 @dataclass(frozen=True, kw_only=True)
