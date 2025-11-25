@@ -204,29 +204,23 @@ def generate_bias_constant(layer) -> STCode:
     )
 
 
-
-# TODO: might need to generate constats for const_fold_opt tensors as well here.
 def generate_constants_section(network: NetworkIR) -> STCode:
     """Generate VAR CONSTANT section (weights, biases, ...)."""
     code = STCode.from_lines("VAR CONSTANT")
 
     for layer in network.layers:
-        # TODO: Might be able to simplify this for layer types that inherit from LinearLayer
-        if isinstance(layer, (MatMulLayer, GemmLayer, FusedGemmLayer)):
+        has_constants = False
+
+        if hasattr(layer, "weights") and layer.weights is not None:
             code += generate_weight_constant(layer).indent()
+            has_constants = True
 
-            if layer.bias is not None:
-                code += generate_bias_constant(layer).indent()
-
-            code += STCode.blank_line()
-
-        elif isinstance(layer, AddLayer):
+        if hasattr(layer, "bias") and layer.bias is not None:
             code += generate_bias_constant(layer).indent()
-            code += STCode.blank_line()
+            has_constants = True
 
-        elif isinstance(layer, ConstFoldOptLayer):
-            # TODO: implement this.
-            pass
+        if has_constants:
+            code += STCode.blank_line()
 
     code += STCode.from_lines("END_VAR", "")
     return code
@@ -438,7 +432,7 @@ def generate_reshape_code(
     return builder.build()
 
 
-# Mapping from layer type to code generator. 
+# Mapping from layer type to code generator.
 LAYER_CODE_GENERATORS = {
     MatMulLayer: generate_matmul_code,
     AddLayer: generate_add_code,
