@@ -25,79 +25,107 @@ class ResolvedTensor:
     is_weight: bool
 
 
+def _infer_dtype(layer_dict: Dict, analyzer: ONNXModel) -> str:
+    """
+    Infer the dtype for a layer's computation.
+    
+    Priority:
+    1. Use first data input's dtype (not weights)
+    2. Fall back to network input dtype
+    3. Throw exception (TODO: maybe default to float)
+    """
+    # Try to get dtype from first non-weight input
+    for inp_name in layer_dict["inputs"]:
+        if inp_name not in analyzer.weights:  # Skip weights
+            tensor_info = analyzer.tensor_info.get(inp_name, {})
+            if dtype := tensor_info.get("onnx_type"):
+                return dtype
+
+    # Fall back to network input dtype
+    input_info, _ = analyzer.get_input_output_info()
+    if input_info["dtypes"]:
+        return input_info["dtypes"][0]
+
+
+    raise ValueError(
+        f"Cannot infer dtype for layer '{layer_dict['name']}'. "
+        f"Inputs: {layer_dict['inputs']}. "
+        f"This likely indicates incomplete ONNX shape inference. "
+        f"Try running: onnx.shape_inference.infer_shapes(model, strict_mode=True)"
+    )
+
+
 def resolve_layer_tensors(layer_dict: Dict, analyzer: ONNXModel) -> Dict:
     """
     Enrich layer dict with fully resolved tensor information.
-
-    This is the ONLY place where analyzer is used - after this,
-    extraction is purely dict-to-IR transformation.
     """
+    # Infer computation dtype once for this layer
+    computation_dtype = _infer_dtype(layer_dict, analyzer)
+    
     resolved_inputs = []
-
     for inp_name in layer_dict["inputs"]:
         tensor_info = analyzer.tensor_info.get(inp_name, {})
         shape = tensor_info.get("shape", ())
-
-        # Check if this is a direct weight/initializer
+        
+        # Check for weights (including dequantized)
         is_weight = inp_name in analyzer.weights
         weight_value = analyzer.weights.get(inp_name)
-
-        # For quantized models: check if this tensor is produced by DequantizeLinear
-        # If so, trace back to find the actual quantized weight
+        
         if not is_weight and weight_value is None:
-            # Check if this is the output of a DequantizeLinear layer
             dequant_weight = _try_get_dequantized_weight(inp_name, analyzer)
             if dequant_weight is not None:
                 is_weight = True
                 weight_value = dequant_weight
-                logger.debug(f"Resolved dequantized weight for {inp_name}")
-
+        
+        # Calculate shape and size
         if is_weight:
-            # Weights must be fully static
             if any(isinstance(dim, str) or dim is None for dim in shape):
-                raise ValueError(
-                    f"Symbolic dimension in weight tensor {inp_name}: {shape}"
-                )
+                raise ValueError(f"Symbolic dimension in weight tensor {inp_name}: {shape}")
             static_shape = tuple(shape)
             size = int(np.prod(shape)) if shape else 0
         else:
-            # Data tensors: skip symbolic/batch dimensions when calculating size
             static_dims = [d for d in shape if isinstance(d, int) and d > 0]
             static_shape = tuple(static_dims) if static_dims else ()
             size = int(np.prod(static_dims)) if static_dims else 0
-
+        
+        # Use tensor_info dtype if available, otherwise use computation dtype for data tensors
+        dtype = tensor_info.get("onnx_type") or (None if is_weight else computation_dtype)
+        
         resolved_inputs.append(
             ResolvedTensor(
                 name=inp_name,
                 shape=static_shape,
-                dtype=tensor_info.get("onnx_type"),
+                dtype=dtype,
                 size=size,
                 value=weight_value,
                 is_weight=is_weight,
             )
         )
-
+    
+    # Resolve outputs - use computation dtype
     resolved_outputs = []
     for out_name in layer_dict["outputs"]:
         tensor_info = analyzer.tensor_info.get(out_name, {})
         shape = tensor_info.get("shape", ())
-
-        # Skip symbolic dimensions
+        
         static_dims = [d for d in shape if isinstance(d, int) and d > 0]
         static_shape = tuple(static_dims) if static_dims else ()
         size = int(np.prod(static_dims)) if static_dims else 0
-
+        
+        # Use tensor_info dtype if available, otherwise use computation dtype
+        dtype = tensor_info.get("onnx_type") or computation_dtype
+        
         resolved_outputs.append(
             ResolvedTensor(
                 name=out_name,
                 shape=static_shape,
-                dtype=tensor_info.get("onnx_type"),
+                dtype=dtype,
                 size=size,
                 value=None,
                 is_weight=False,
             )
         )
-
+    
     return {
         **layer_dict,
         "resolved_inputs": resolved_inputs,
@@ -566,100 +594,22 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
     output_tensor_names = tuple(output_info.get("names", []))
 
     # Phase 1: Resolve all tensors (inputs/outputs) for each layer
-    # This includes shapes, dtypes, constant values for weights, etc
     onnx_layers = analyzer.analyze_layers()
     enriched_layers = []
     for layer_dict in onnx_layers:
         try:
+            # Skip quantization layers entirely - they're compile-time only
+            if layer_dict["op_type"] in ["QuantizeLinear", "DequantizeLinear"]:
+                logger.debug(f"Skipping quantization layer: {layer_dict['name']}")
+                continue
+
             enriched = resolve_layer_tensors(layer_dict, analyzer)
             enriched_layers.append(enriched)
         except Exception as e:
             logger.error(f"Failed to resolve layer {layer_dict['name']}: {e}")
             raise
 
-    # Phase 2: Propagate dtypes through the graph
-    # ONNX shape inference doesn't always populate dtype information for all intermediate layers,
-    # especially for fused layers, reshape layers, etc
-    # This pass updates the resolved tensor dtypes by propagating known dtypes through the graph,
-    # ensuring every tensor has a dtype before code generation (phase 3)
-
-    tensor_dtypes: Dict[str, str] = {}
-
-    # Seed with network inputs - these define the interface types for the PLC
-    # IMPORTANT: Use the original input dtypes, not any quantized versions
-    for inp_name, dtype in zip(input_info["names"], input_info["dtypes"]):
-        tensor_dtypes[inp_name] = dtype
-        logger.debug(f"Network input {inp_name} has dtype {dtype}")
-
-    # Forward propagate dtypes through computation graph
-    for enriched in enriched_layers:
-        op_type = enriched["op_type"]
-
-        # For quantization layers, don't propagate their output dtype
-        # These are compile-time only and shouldn't affect PLC inference types
-        if op_type in ["QuantizeLinear", "DequantizeLinear"]:
-            # Still need to track what they produce, but use the INPUT dtype
-            # This preserves the floating-point nature through the graph
-            for resolved_input in enriched["resolved_inputs"]:
-                if not resolved_input.is_weight and resolved_input.dtype is not None:
-                    # Use the input dtype for outputs (e.g., FLOAT stays FLOAT)
-                    for out_name in enriched["outputs"]:
-                        tensor_dtypes[out_name] = resolved_input.dtype
-                        logger.debug(
-                            f"Quantization layer {enriched['name']}: "
-                            f"preserving dtype {resolved_input.dtype} for {out_name}"
-                        )
-                    break
-            continue
-
-        # Update input dtypes from known tensor_dtypes
-        updated_inputs = []
-        for resolved_input in enriched["resolved_inputs"]:
-            dtype = resolved_input.dtype
-            if dtype is None and resolved_input.name in tensor_dtypes:
-                dtype = tensor_dtypes[resolved_input.name]
-
-            updated_inputs.append(
-                ResolvedTensor(
-                    name=resolved_input.name,
-                    shape=resolved_input.shape,
-                    dtype=dtype,
-                    size=resolved_input.size,
-                    value=resolved_input.value,
-                    is_weight=resolved_input.is_weight,
-                )
-            )
-        enriched["resolved_inputs"] = updated_inputs
-
-        # Infer output dtype from first data input
-        first_data_dtype = None
-        for inp in updated_inputs:
-            if not inp.is_weight and inp.dtype is not None:
-                first_data_dtype = inp.dtype
-                break
-
-        # Update output dtypes
-        updated_outputs = []
-        for resolved_output in enriched["resolved_outputs"]:
-            output_dtype = resolved_output.dtype or first_data_dtype
-
-            updated_outputs.append(
-                ResolvedTensor(
-                    name=resolved_output.name,
-                    shape=resolved_output.shape,
-                    dtype=output_dtype,
-                    size=resolved_output.size,
-                    value=resolved_output.value,
-                    is_weight=resolved_output.is_weight,
-                )
-            )
-
-            if output_dtype is not None:
-                tensor_dtypes[resolved_output.name] = output_dtype
-
-        enriched["resolved_outputs"] = updated_outputs
-
-    # Phase 3: Extract layers
+    # Phase 2: Extract layers (no more dtype propagation needed!)
     layers_dict = {}
     tensor_producers = {}
     tensor_consumers = {}
@@ -692,7 +642,7 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
             logger.error(f"Failed to extract layer {layer_id} ({op_type}): {e}")
             raise
 
-    # Phase 4: Topological sort
+    # Phase 3: Topological sort
     execution_order = topological_sort(
         layers_dict, tensor_producers, tensor_consumers, input_tensor_names
     )
