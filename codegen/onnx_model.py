@@ -10,6 +10,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class ONNXModel:
     """
     A class to load and analyze ONNX models, extracting weights, layer information,
@@ -19,7 +20,7 @@ class ONNXModel:
     def __init__(self, model_path: str | Path):
         """
         Initialize the analyzer with an ONNX model.
-        
+
         Args:
             model_path: Path to the ONNX model file (string or Path object)
         """
@@ -30,12 +31,12 @@ class ONNXModel:
         self.layers = []
         self.input_info = {}
         self.output_info = {}
-        self.tensor_info = {} # Maps tensor names to their types and shapes
+        self.tensor_info = {}  # Maps tensor names to their types and shapes
 
     def load_model(self) -> bool:
         """
         Load the ONNX model from file.
-        
+
         Returns:
             bool: True if successfully loaded, False otherwise
         """
@@ -72,11 +73,11 @@ class ONNXModel:
 
         shape = []
         for d in t.shape.dim:
-            if d.dim_value > 0: # Fixed dimension
+            if d.dim_value > 0:  # Fixed dimension
                 shape.append(d.dim_value)
-            elif d.dim_param: # Symbolic dimension
+            elif d.dim_param:  # Symbolic dimension
                 shape.append(str(d.dim_param))
-            else: # Unknown dimension
+            else:  # Unknown dimension
                 shape.append(None)
 
         return {
@@ -117,11 +118,13 @@ class ONNXModel:
         # Fill member variables
         self.tensor_info = tensor_info
         self.input_info = {
-            name: info for name, info in tensor_info.items()
+            name: info
+            for name, info in tensor_info.items()
             if any(inp.name == name for inp in self.graph.input)
         }
         self.output_info = {
-            name: info for name, info in tensor_info.items()
+            name: info
+            for name, info in tensor_info.items()
             if any(out.name == name for out in self.graph.output)
         }
 
@@ -136,7 +139,7 @@ class ONNXModel:
         """
         Infer type and shape for intermediate tensors that ONNX shape inference missed.
         This happens when layers output tensors that aren't in value_info.
-        
+
         Args:
             tensor_info: Dictionary to populate with inferred info (modified in-place)
             inferred_model: ONNX model after shape inference
@@ -158,7 +161,9 @@ class ONNXModel:
 
                 input_name = node.input[0]
                 if input_name not in tensor_info:
-                    logger.debug(f"Cannot infer '{output_name}': input '{input_name}' missing from tensor_info")
+                    logger.debug(
+                        f"Cannot infer '{output_name}': input '{input_name}' missing from tensor_info"
+                    )
                     continue
 
                 input_info = tensor_info[input_name]
@@ -176,26 +181,32 @@ class ONNXModel:
                         f"shape={inferred_info.get('shape')}"
                     )
                 else:
-                    logger.debug(f"Could not infer tensor '{output_name}' from {node.op_type}")
+                    logger.debug(
+                        f"Could not infer tensor '{output_name}' from {node.op_type}"
+                    )
 
     def _infer_tensor_from_op(
-    self, node, input_info: Dict, tensor_info: Dict
-) -> Optional[Dict]:
+        self, node, input_info: Dict, tensor_info: Dict
+    ) -> Optional[Dict]:
         op_type = node.op_type
-        input_type = input_info.get('onnx_type')
+        input_type = input_info.get("onnx_type")
         if not input_type:
             logger.warning(f"Input tensor type unknown for operation {op_type}")
             raise ValueError("Input tensor type unknown")
 
         # Operations that preserve shape and type
-        if op_type in ['Relu', 'Sigmoid', 'Tanh', 'Softmax', 'Add']:
+        if op_type in ["Relu", "Sigmoid", "Tanh", "Softmax", "Add"]:
             return {
-                'onnx_type': input_type,
-                'shape': input_info.get('shape', []).copy() if input_info.get('shape') else []
+                "onnx_type": input_type,
+                "shape": (
+                    input_info.get("shape", []).copy()
+                    if input_info.get("shape")
+                    else []
+                ),
             }
 
         # need to check weight shape for these
-        if op_type in ['MatMul', 'Gemm', 'FusedGemm']:
+        if op_type in ["MatMul", "Gemm", "FusedGemm"]:
             # Find weight tensor (second input, should be in initializers)
             if len(node.input) < 2:
                 return None
@@ -209,17 +220,16 @@ class ONNXModel:
                 return None
 
             # Output shape: [batch_size, output_features]
-            input_shape = input_info.get('shape', [])
+            input_shape = input_info.get("shape", [])
             batch_size = input_shape[0] if input_shape else 1
-            output_features = weight_shape[1]  # Assuming [input_features, output_features]
+            output_features = weight_shape[
+                1
+            ]  # Assuming [input_features, output_features]
 
-            return {
-                'onnx_type': input_type,
-                'shape': [batch_size, output_features]
-            }
+            return {"onnx_type": input_type, "shape": [batch_size, output_features]}
 
         # Reshape - check shape input
-        if op_type == 'Reshape':
+        if op_type == "Reshape":
             if len(node.input) < 2:
                 return None
 
@@ -228,10 +238,7 @@ class ONNXModel:
                 return None
 
             target_shape = self.weights[shape_name].tolist()
-            return {
-                'onnx_type': input_type,
-                'shape': [int(d) for d in target_shape]
-            }
+            return {"onnx_type": input_type, "shape": [int(d) for d in target_shape]}
 
         # QuantizeLinear/DequantizeLinear preserve shape
         # QuantizeLinear - outputs INT8/UINT8 typically
@@ -251,12 +258,14 @@ class ONNXModel:
             return {
                 "onnx_type": output_type,
                 "shape": (
-                    input_info.get("shape", []).copy() if input_info.get("shape") else []
+                    input_info.get("shape", []).copy()
+                    if input_info.get("shape")
+                    else []
                 ),
             }
 
-        if op_type == 'DequantizeLinear':
-            output_type = 'TensorProto.FLOAT'  # Default
+        if op_type == "DequantizeLinear":
+            output_type = "TensorProto.FLOAT"  # Default
 
             # Try to infer from scale tensor (second input)
             if len(node.input) >= 2:
@@ -265,20 +274,24 @@ class ONNXModel:
                     scale = self.weights[scale_name]
                     # Infer output type from scale dtype
                     if scale.dtype == np.float32:
-                        output_type = 'TensorProto.FLOAT'
+                        output_type = "TensorProto.FLOAT"
                     elif scale.dtype == np.float64:
-                        output_type = 'TensorProto.DOUBLE'
+                        output_type = "TensorProto.DOUBLE"
                     elif scale.dtype == np.float16:
-                        output_type = 'TensorProto.FLOAT16'
+                        output_type = "TensorProto.FLOAT16"
                 # If scale is in tensor_info instead of weights (dynamic scale)
                 elif scale_name in tensor_info:
-                    scale_type = tensor_info[scale_name].get('onnx_type')
+                    scale_type = tensor_info[scale_name].get("onnx_type")
                     if scale_type:
                         output_type = scale_type
 
             return {
-                'onnx_type': output_type,
-                'shape': input_info.get('shape', []).copy() if input_info.get('shape') else []
+                "onnx_type": output_type,
+                "shape": (
+                    input_info.get("shape", []).copy()
+                    if input_info.get("shape")
+                    else []
+                ),
             }
 
         # Unknown operation type
@@ -287,7 +300,7 @@ class ONNXModel:
     def extract_weights(self) -> Dict[str, np.ndarray]:
         """
         Extract all weights and biases from the model.
-        
+
         Returns:
             Dict[str, np.ndarray]: Dictionary mapping parameter names to numpy arrays
         """
@@ -308,7 +321,7 @@ class ONNXModel:
     def analyze_layers(self) -> List[Dict[str, Any]]:
         """
         Analyze all layers/nodes in the model.
-        
+
         Returns:
             List[Dict[str, Any]]: List of layer information dictionaries
         """
@@ -323,25 +336,25 @@ class ONNXModel:
 
         for node in self.graph.node:
             layer_info = {
-                'name': node.name,
-                'op_type': node.op_type,
-                'inputs': list(node.input),
-                'outputs': list(node.output),
-                'attributes': {}
+                "name": node.name,
+                "op_type": node.op_type,
+                "inputs": list(node.input),
+                "outputs": list(node.output),
+                "attributes": {},
             }
 
             # Extract attributes
             for attr in node.attribute:
                 if attr.type == onnx.AttributeProto.INT:
-                    layer_info['attributes'][attr.name] = attr.i
+                    layer_info["attributes"][attr.name] = attr.i
                 elif attr.type == onnx.AttributeProto.FLOAT:
-                    layer_info['attributes'][attr.name] = attr.f
+                    layer_info["attributes"][attr.name] = attr.f
                 elif attr.type == onnx.AttributeProto.STRING:
-                    layer_info['attributes'][attr.name] = attr.s.decode('utf-8')
+                    layer_info["attributes"][attr.name] = attr.s.decode("utf-8")
                 elif attr.type == onnx.AttributeProto.INTS:
-                    layer_info['attributes'][attr.name] = list(attr.ints)
+                    layer_info["attributes"][attr.name] = list(attr.ints)
                 elif attr.type == onnx.AttributeProto.FLOATS:
-                    layer_info['attributes'][attr.name] = list(attr.floats)
+                    layer_info["attributes"][attr.name] = list(attr.floats)
 
             layers.append(layer_info)
 
@@ -351,7 +364,7 @@ class ONNXModel:
     def get_input_output_info(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Get information about model inputs and outputs.
-        
+
         Returns:
             Tuple[Dict[str, Any], Dict[str, Any]]: Input info and output info
         """
@@ -370,11 +383,11 @@ class ONNXModel:
                     if dim.dim_value:
                         shape.append(dim.dim_value)
                     else:
-                        shape.append(-1)  
+                        shape.append(-1)
 
                 input_info[input_tensor.name] = {
-                    'shape': shape,
-                    'dtype': input_tensor.type.tensor_type.elem_type
+                    "shape": shape,
+                    "dtype": input_tensor.type.tensor_type.elem_type,
                 }
 
         output_info = {}
@@ -384,11 +397,11 @@ class ONNXModel:
                 if dim.dim_value:
                     shape.append(dim.dim_value)
                 else:
-                    shape.append(-1)  
+                    shape.append(-1)
 
             output_info[output_tensor.name] = {
-                'shape': shape,
-                'dtype': output_tensor.type.tensor_type.elem_type
+                "shape": shape,
+                "dtype": output_tensor.type.tensor_type.elem_type,
             }
 
         self.input_info = input_info
@@ -450,6 +463,75 @@ class ONNXModel:
             f"Cannot determine size."
         )
 
+    def get_quantized_weight(
+        self, tensor_name: str
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Get a weight tensor with its scale and zero-point.
+
+        Args:
+            tensor_name: Name of the dequantized tensor (output of DequantizeLinear)
+
+        Returns:
+            Tuple of (quantized_weight, scale, zero_point) if found, else None.
+        """
+
+        # Check if it is an output of a DequantizeLinear layer
+        for layer in self.layers:
+            if (
+                layer["op_type"] == "DequantizeLinear"
+                and layer["outputs"][0] == tensor_name
+            ):
+                quantized_name = layer["inputs"][0]
+                scale_name = layer["inputs"][1]
+                zero_point_name = layer["inputs"][2]
+
+                if (
+                    quantized_name in self.weights
+                    and scale_name in self.weights
+                    and zero_point_name in self.weights
+                ):
+
+                    return (
+                        self.weights[quantized_name],
+                        self.weights[scale_name],
+                        self.weights[zero_point_name],
+                    )
+
+        return None
+
+    def get_dequantized_weight(self, tensor_name: str) -> Optional[np.ndarray]:
+        """
+        Get a weight tensor, dequantizing if necessary.
+
+        For quantized models, it attempts to trace back through DequantizeLinear layers
+        to find the original quantized weights, scale, and zero-point.
+
+        Args:
+            tensor_name: Name of the weight tensor (could be dequantized)
+
+        Returns:
+            np.ndarray: Dequantized weight tensor, or None if not found
+        """
+
+        # It might already be a weight tensor / dequantized
+        if tensor_name in self.weights:
+            return self.weights[tensor_name]
+
+        quantized_info = self.get_quantized_weight(tensor_name)
+
+        if quantized_info is None:
+            logger.warning(
+                f"Weight tensor '{tensor_name}' not found as dequantized or quantized."
+            )
+            return None
+
+        quantized_weight, scale, zero_point = quantized_info
+        # dequantize: real_value = scale * (quantized_value - zero_point)
+        dequantized = scale * (
+            quantized_weight.astype(np.float32) - zero_point.astype(np.float32)
+        )
+        return dequantized
+
     def get_weights_and_biases(
         self, layer_inputs: List[str]
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
@@ -466,8 +548,11 @@ class ONNXModel:
         bias_tensor = None
 
         for name in layer_inputs:
-            if name in self.weights:
-                tensor = self.weights[name]
+
+            # Check for quantized weights first, since these may not be in weights directly
+            tensor = self.get_dequantized_weight(name)
+
+            if tensor is not None:
                 if len(tensor.shape) == 2:
                     weight_tensor = tensor
                 elif len(tensor.shape) == 1:
@@ -523,15 +608,15 @@ class ONNXModel:
 def load_and_analyze_onnx_model(model_path: str | Path) -> ONNXModel:
     """
     Convenience function to load and analyze an ONNX model.
-    
+
     Args:
         model_path: Path to the ONNX model file (string or Path object)
-        
+
     Returns:
         ONNXModel: Loaded ONNX model
     """
     analyzer = ONNXModel(model_path)
-    
+
     if analyzer.load_model():
         analyzer._build_tensor_info()
         analyzer.extract_weights()
@@ -544,21 +629,22 @@ def load_and_analyze_onnx_model(model_path: str | Path) -> ONNXModel:
 
 if __name__ == "__main__":
     import argparse
-    
+
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Load and analyze ONNX model')
-    parser.add_argument('model_name', nargs='?', help='Name of the ONNX model file (without .onnx extension)')
+    parser = argparse.ArgumentParser(description="Load and analyze ONNX model")
+    parser.add_argument(
+        "model_name",
+        nargs="?",
+        help="Name of the ONNX model file (without .onnx extension)",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
     log_level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(levelname)s: %(message)s"
-    )    
+    logging.basicConfig(level=log_level, format="%(levelname)s: %(message)s")
 
     models_dir = Path("examples") / "models" / "onnx"
-    
+
     if not models_dir.exists():
         logger.error(f"ONNX models directory not found: {models_dir}")
         exit(1)
@@ -583,13 +669,12 @@ if __name__ == "__main__":
         logger.info(f"No model specified, using: {model_path.stem}\n")
 
     analyzer = load_and_analyze_onnx_model(model_path)
-    analyzer._build_tensor_info()  
-
+    analyzer._build_tensor_info()
 
     if analyzer:
         logger.info(f"\nExtracted {len(analyzer.weights)} weight tensors")
         logger.info(f"Found {len(analyzer.layers)} layers")
-        
+
         for i, layer in enumerate(analyzer.layers):
             logger.info(f"\nLayer {i+1}:")
             logger.info(f"  Name: {layer['name']}")
