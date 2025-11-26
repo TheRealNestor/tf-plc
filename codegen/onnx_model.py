@@ -4,7 +4,7 @@ Loads and analyzes ONNX models to extract weights, layer information, and model 
 
 import onnx
 import numpy as np
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 from pathlib import Path
 import logging
 
@@ -112,6 +112,8 @@ class ONNXModel:
         for v in inferred.graph.value_info:
             tensor_info[v.name] = self.parse_value(v)
 
+        self._infer_missing_tensor_info(tensor_info, inferred)
+
         # Fill member variables
         self.tensor_info = tensor_info
         self.input_info = {
@@ -129,6 +131,158 @@ class ONNXModel:
             self.extract_weights()
 
         logger.info(f"Extracted tensor info for {len(self.tensor_info)} tensors.")
+
+    def _infer_missing_tensor_info(self, tensor_info: Dict, inferred_model):
+        """
+        Infer type and shape for intermediate tensors that ONNX shape inference missed.
+        This happens when layers output tensors that aren't in value_info.
+        
+        Args:
+            tensor_info: Dictionary to populate with inferred info (modified in-place)
+            inferred_model: ONNX model after shape inference
+        """
+        # Make sure weights are extracted first
+        if not self.weights:
+            self.extract_weights()
+
+        # Process nodes in order to propagate shape information
+        for node in inferred_model.graph.node:
+            # Check each output of this node
+            for output_name in node.output:
+                if output_name in tensor_info:
+                    continue  # Already have info
+
+                # Try to infer from input tensor and operation
+                if not node.input:
+                    continue
+
+                input_name = node.input[0]
+                if input_name not in tensor_info:
+                    logger.debug(f"Cannot infer '{output_name}': input '{input_name}' missing from tensor_info")
+                    continue
+
+                input_info = tensor_info[input_name]
+
+                # Infer based on operation type
+                inferred_info = self._infer_tensor_from_op(
+                    node, input_info, tensor_info
+                )
+
+                if inferred_info:
+                    tensor_info[output_name] = inferred_info
+                    logger.debug(
+                        f"Inferred tensor '{output_name}' from {node.op_type}: "
+                        f"type={inferred_info.get('onnx_type')}, "
+                        f"shape={inferred_info.get('shape')}"
+                    )
+                else:
+                    logger.debug(f"Could not infer tensor '{output_name}' from {node.op_type}")
+
+    def _infer_tensor_from_op(
+    self, node, input_info: Dict, tensor_info: Dict
+) -> Optional[Dict]:
+        op_type = node.op_type
+        input_type = input_info.get('onnx_type')
+        if not input_type:
+            logger.warning(f"Input tensor type unknown for operation {op_type}")
+            raise ValueError("Input tensor type unknown")
+
+        # Operations that preserve shape and type
+        if op_type in ['Relu', 'Sigmoid', 'Tanh', 'Softmax', 'Add']:
+            return {
+                'onnx_type': input_type,
+                'shape': input_info.get('shape', []).copy() if input_info.get('shape') else []
+            }
+
+        # need to check weight shape for these
+        if op_type in ['MatMul', 'Gemm', 'FusedGemm']:
+            # Find weight tensor (second input, should be in initializers)
+            if len(node.input) < 2:
+                return None
+
+            weight_name = node.input[1]
+            if weight_name not in self.weights:
+                return None
+
+            weight_shape = self.weights[weight_name].shape
+            if len(weight_shape) != 2:
+                return None
+
+            # Output shape: [batch_size, output_features]
+            input_shape = input_info.get('shape', [])
+            batch_size = input_shape[0] if input_shape else 1
+            output_features = weight_shape[1]  # Assuming [input_features, output_features]
+
+            return {
+                'onnx_type': input_type,
+                'shape': [batch_size, output_features]
+            }
+
+        # Reshape - check shape input
+        if op_type == 'Reshape':
+            if len(node.input) < 2:
+                return None
+
+            shape_name = node.input[1]
+            if shape_name not in self.weights:
+                return None
+
+            target_shape = self.weights[shape_name].tolist()
+            return {
+                'onnx_type': input_type,
+                'shape': [int(d) for d in target_shape]
+            }
+
+        # QuantizeLinear/DequantizeLinear preserve shape
+        # QuantizeLinear - outputs INT8/UINT8 typically
+        if op_type == "QuantizeLinear":
+            # Check if there's a zero_point to infer the output type
+            output_type = "TensorProto.INT8"  # Common default for quantization
+            if len(node.input) >= 3:
+                zero_point_name = node.input[2]
+                if zero_point_name in self.weights:
+                    zero_point = self.weights[zero_point_name]
+                    # Infer type from zero point dtype
+                    if zero_point.dtype == np.uint8:
+                        output_type = "TensorProto.UINT8"
+                    elif zero_point.dtype == np.int8:
+                        output_type = "TensorProto.INT8"
+
+            return {
+                "onnx_type": output_type,
+                "shape": (
+                    input_info.get("shape", []).copy() if input_info.get("shape") else []
+                ),
+            }
+        
+        if op_type == 'DequantizeLinear':
+            output_type = 'TensorProto.FLOAT'  # Default
+            
+            # Try to infer from scale tensor (second input)
+            if len(node.input) >= 2:
+                scale_name = node.input[1]
+                if scale_name in self.weights:
+                    scale = self.weights[scale_name]
+                    # Infer output type from scale dtype
+                    if scale.dtype == np.float32:
+                        output_type = 'TensorProto.FLOAT'
+                    elif scale.dtype == np.float64:
+                        output_type = 'TensorProto.DOUBLE'
+                    elif scale.dtype == np.float16:
+                        output_type = 'TensorProto.FLOAT16'
+                # If scale is in tensor_info instead of weights (dynamic scale)
+                elif scale_name in tensor_info:
+                    scale_type = tensor_info[scale_name].get('onnx_type')
+                    if scale_type:
+                        output_type = scale_type
+            
+            return {
+                'onnx_type': output_type,
+                'shape': input_info.get('shape', []).copy() if input_info.get('shape') else []
+            }
+
+        # Unknown operation type
+        return None
 
     def extract_weights(self) -> Dict[str, np.ndarray]:
         """

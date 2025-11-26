@@ -9,6 +9,7 @@ import numpy as np
 from .onnx_model import ONNXModel
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +30,7 @@ def resolve_static_dims(shape, tensor_name):
 
     return static
 
+
 def static_product(shape, tensor_name):
     """
     Compute product of static dims only.
@@ -38,9 +40,7 @@ def static_product(shape, tensor_name):
     return int(np.prod(static))
 
 
-def extract_common_layer_info(
-    layer: Dict, layer_id: int
-) -> Dict:
+def extract_common_layer_info(layer: Dict, layer_id: int) -> Dict:
     layer_name = layer.get("name") or f"{layer['op_type']}_{layer_id}"
 
     return {
@@ -58,19 +58,6 @@ def extract_type_info(layer: Dict, analyzer: ONNXModel) -> Dict:
 
     if layer.get("inputs"):
         input_name = layer["inputs"][0]
-
-        # TODO: remove this, which was for debugging purposes.
-        if not input_name in analyzer.tensor_info:
-            logger.warning(
-                
-                f"Input '{input_name}' not found in tensor_info for layer "
-                f"{layer.get('name', layer['op_type'])}"
-            )
-            # log the name mismatch
-            logger.warning(
-                f"input_name: {input_name}..."
-                f"analyzer tensor info: {analyzer.tensor_info}"
-            )
         if input_name in analyzer.tensor_info:
             info = analyzer.tensor_info[input_name]
             shape = info.get("shape", [])
@@ -106,8 +93,9 @@ def create_layer_base(layer: Dict, layer_id: int, analyzer: ONNXModel) -> Dict:
     type_info = extract_type_info(layer, analyzer)
     return {**common_info, **type_info}
 
+
 def extract_activation_layer(
-        layer: Dict, layer_id: int, input_size: int, output_size: int, analyzer: ONNXModel
+    layer: Dict, layer_id: int, input_size: int, output_size: int, analyzer: ONNXModel
 ) -> ActivationLayer:
     layer_base = create_layer_base(layer, layer_id, analyzer)
     activation_type = ActivationType[layer["op_type"].upper()]
@@ -120,46 +108,64 @@ def extract_activation_layer(
     )
 
 
-def extract_add_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarray], input_size: int, output_size: int, analyzer: ONNXModel) -> AddLayer:
+def extract_add_layer(
+    layer: Dict,
+    layer_id: int,
+    weights: Dict[str, np.ndarray],
+    input_size: int,
+    output_size: int,
+    analyzer: ONNXModel,
+) -> AddLayer:
     base_info = create_layer_base(layer, layer_id, analyzer)
 
     bias_tensor = next(
-        (weights[name] for name in layer["inputs"]
-         if name in weights and len(weights[name].shape) == 1),
-        None
+        (
+            weights[name]
+            for name in layer["inputs"]
+            if name in weights and len(weights[name].shape) == 1
+        ),
+        None,
     )
 
     if bias_tensor is None:
         logger.error(f"Add layer {layer_id} missing required bias tensor")
         raise ValueError(f"Add layer {layer_id} missing required bias tensor")
 
-    return AddLayer(**base_info, bias=bias_tensor, input_size=input_size, output_size=output_size)
+    return AddLayer(
+        **base_info, bias=bias_tensor, input_size=input_size, output_size=output_size
+    )
 
 
-def extract_matmul_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarray], analyzer: ONNXModel) -> MatMulLayer:
+def extract_matmul_layer(
+    layer: Dict, layer_id: int, weights: Dict[str, np.ndarray], analyzer: ONNXModel
+) -> MatMulLayer:
     base_info = create_layer_base(layer, layer_id, analyzer)
 
     weight_tensor = next(
-        (weights[name] for name in layer["inputs"]
-         if name in weights and len(weights[name].shape) == 2),
-        None
+        (
+            weights[name]
+            for name in layer["inputs"]
+            if name in weights and len(weights[name].shape) == 2
+        ),
+        None,
     )
 
     if weight_tensor is None:
         logger.error(f"MatMul layer {layer_id} missing required weight tensor")
-        raise ValueError(
-            f"MatMul layer {layer_id} missing required weight tensor")
+        raise ValueError(f"MatMul layer {layer_id} missing required weight tensor")
 
     input_size, output_size = weight_tensor.shape
     return MatMulLayer(
         **base_info,
-        weights=weight_tensor,  
+        weights=weight_tensor,
         input_size=input_size,
-        output_size=output_size
+        output_size=output_size,
     )
 
 
-def extract_gemm_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarray], analyzer: ONNXModel) -> GemmLayer:
+def extract_gemm_layer(
+    layer: Dict, layer_id: int, weights: Dict[str, np.ndarray], analyzer: ONNXModel
+) -> GemmLayer:
     base_info = create_layer_base(layer, layer_id, analyzer)
 
     weight_tensor = bias_tensor = None
@@ -173,31 +179,10 @@ def extract_gemm_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarray
 
     if weight_tensor is None:
         logger.error(f"Gemm layer {layer_id} missing required weight tensor")
-        raise ValueError(
-            f"Gemm layer {layer_id} missing required weight tensor")
+        raise ValueError(f"Gemm layer {layer_id} missing required weight tensor")
 
     input_size, output_size = weight_tensor.shape
     attrs = layer.get("attributes", {})
-
-    # TODO: Clean this code up (duplicated for fused_gemm). I'm not sure this should be necessary.
-    # Infer output type/shape from input if missing
-    output_name = layer["outputs"][0]
-    if output_name not in analyzer.tensor_info:
-        logger.debug(f"Inferring tensor_info for Gemm output '{output_name}'")
-        input_name = layer["inputs"][0]
-        if input_name in analyzer.tensor_info:
-            input_info = analyzer.tensor_info[input_name]
-            analyzer.tensor_info[output_name] = {
-                "onnx_type": input_info.get("onnx_type", "TensorProto.FLOAT"),
-                "shape": [
-                    input_info["shape"][0] if input_info["shape"] else "unk",
-                    output_size,
-                ],
-            }
-            base_info["output_type"] = analyzer.tensor_info[output_name]["onnx_type"]
-            base_info["output_shape"] = tuple(
-                analyzer.tensor_info[output_name]["shape"]
-            )
 
     return GemmLayer(
         **base_info,
@@ -215,8 +200,7 @@ def extract_gemm_layer(layer: Dict, layer_id: int, weights: Dict[str, np.ndarray
 def extract_fused_gemm_layer(
     layer: Dict, layer_id: int, weights: Dict[str, np.ndarray], analyzer: ONNXModel
 ) -> FusedGemmLayer:
-    base_info = create_layer_base(
-        layer, layer_id, analyzer)
+    base_info = create_layer_base(layer, layer_id, analyzer)
 
     weight_tensor = bias_tensor = None
     for name in layer["inputs"]:
@@ -229,35 +213,15 @@ def extract_fused_gemm_layer(
 
     attrs = layer.get("attributes", {})
     if weight_tensor is None or "activation" not in attrs:
-        logger.error(f"FusedGemm layer {layer_id} missing required weight tensor or activation attribute")
+        logger.error(
+            f"FusedGemm layer {layer_id} missing required weight tensor or activation attribute"
+        )
         raise ValueError(
             f"FusedGemm layer {layer_id} missing required weight tensor or activation attribute"
         )
 
     input_size, output_size = weight_tensor.shape
     activation_type = ActivationType[attrs["activation"].upper()]
-
-    # Fusing layers might explicitly require updating the tensor_info like this (as opposed to just returning the layer)
-    output_name = layer["outputs"][0]
-    if output_name not in analyzer.tensor_info:
-        logger.debug(f"Inferring tensor_info for FusedGemm output '{output_name}'")
-        # Get input tensor info
-        input_name = layer["inputs"][0]
-        if input_name in analyzer.tensor_info:
-            input_info = analyzer.tensor_info[input_name]
-            # Output has same type as input, but different shape
-            analyzer.tensor_info[output_name] = {
-                "onnx_type": input_info.get("onnx_type", "TensorProto.FLOAT"),
-                "shape": [
-                    input_info["shape"][0] if input_info["shape"] else "unk",
-                    output_size,
-                ],
-            }
-            # Update base_info with inferred output type/shape
-            base_info["output_type"] = analyzer.tensor_info[output_name]["onnx_type"]
-            base_info["output_shape"] = tuple(
-                analyzer.tensor_info[output_name]["shape"]
-            )
 
     return FusedGemmLayer(
         **base_info,
@@ -439,7 +403,6 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
     logger.debug(f"Static model input size = {input_size}, from shape {input_shape}")
     logger.debug(f"Static model output size = {output_size}, from shape {output_shape}")
 
-
     ir_layers = []
     layer_id = 0
     idx = 0
@@ -500,7 +463,9 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
 
     logger.info(f"Successfully converted {len(ir_layers)} layers to IR")
 
-    network = NetworkIR(input_size = input_size, output_size = output_size, layers=tuple(ir_layers))
+    network = NetworkIR(
+        input_size=input_size, output_size=output_size, layers=tuple(ir_layers)
+    )
     logger.info(network)
 
     return network

@@ -4,6 +4,14 @@
 - Add dropout layers
 - Quantize/Dequantize layers (I think values for this are already accessible statically in the IR, probably a simple calculation to add this)
 - Figure out a way to reuse variables in ST code to reduce memory footprint. I don't think there is a garbage collector or anything of the sort....
-- Update readme.md 
 - Figure out how to access the temperature sensor on the HW. 
 - Simpler way to use StratonPLC? 
+
+
+- Record real sensor readings, including time and conditions behind the data. 
+- SHA holiday from 10/12 
+- Get feedback on report early...
+- Contribution table at the end of the report (both report and engineering work) [also do this early, december-early]
+
+
+- By next week-ish send draft of report and contributions

@@ -21,4 +21,4 @@ authors = [
     {name = "Krisitan Dueholm Hill"},
     {name = "Firas Saleh"},
 ]
-description = "Tool suite for converting Tensorflow models to IEC 61131-3 Structured Text"
+description = "Tool suite for converting onnx models to IEC 61131-3 Structured Text"
