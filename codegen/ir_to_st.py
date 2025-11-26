@@ -127,6 +127,8 @@ def plc_type_from_dtype(dtype: str) -> str:
             return "DINT"
         case "TensorProto.INT64":
             return "LINT"
+        case "TensorProto.INT8":
+            return "SINT"
         case _:
             logging.warning(f"Data type {dtype} is not explicitly supported, adding placeholder.")
             return "<UNSUPPORTED_TYPE>"

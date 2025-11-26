@@ -37,7 +37,20 @@ def resolve_layer_tensors(layer_dict: Dict, analyzer: ONNXModel) -> Dict:
     for inp_name in layer_dict["inputs"]:
         tensor_info = analyzer.tensor_info.get(inp_name, {})
         shape = tensor_info.get("shape", ())
+
+        # Check if this is a direct weight/initializer
         is_weight = inp_name in analyzer.weights
+        weight_value = analyzer.weights.get(inp_name)
+
+        # For quantized models: check if this tensor is produced by DequantizeLinear
+        # If so, trace back to find the actual quantized weight
+        if not is_weight and weight_value is None:
+            # Check if this is the output of a DequantizeLinear layer
+            dequant_weight = _try_get_dequantized_weight(inp_name, analyzer)
+            if dequant_weight is not None:
+                is_weight = True
+                weight_value = dequant_weight
+                logger.debug(f"Resolved dequantized weight for {inp_name}")
 
         if is_weight:
             # Weights must be fully static
@@ -59,7 +72,7 @@ def resolve_layer_tensors(layer_dict: Dict, analyzer: ONNXModel) -> Dict:
                 shape=static_shape,
                 dtype=tensor_info.get("onnx_type"),
                 size=size,
-                value=analyzer.weights.get(inp_name),
+                value=weight_value,
                 is_weight=is_weight,
             )
         )
@@ -90,6 +103,98 @@ def resolve_layer_tensors(layer_dict: Dict, analyzer: ONNXModel) -> Dict:
         "resolved_inputs": resolved_inputs,
         "resolved_outputs": resolved_outputs,
     }
+
+
+def _try_get_dequantized_weight(
+    tensor_name: str, analyzer: ONNXModel
+) -> Optional[np.ndarray]:
+    """
+    Try to resolve a dequantized weight tensor.
+
+    In quantized models, weights are stored as:
+      QuantizedWeight -> DequantizeLinear -> UsableWeight
+
+    This function traces back from a tensor name to find if it's the output
+    of a DequantizeLinear layer, and if so, dequantizes the weight.
+
+    Args:
+        tensor_name: Name of the tensor (potentially a DequantizeLinear output)
+        analyzer: ONNX model analyzer
+
+    Returns:
+        Dequantized weight array, or None if not a dequantized weight
+    """
+    # Find the layer that produces this tensor
+    producer_layer = None
+    for layer in analyzer.layers:
+        if tensor_name in layer["outputs"]:
+            producer_layer = layer
+            break
+
+    if producer_layer is None or producer_layer["op_type"] != "DequantizeLinear":
+        return None
+
+    # DequantizeLinear has inputs: [quantized_data, scale, zero_point]
+    inputs = producer_layer["inputs"]
+    if len(inputs) < 3:
+        logger.warning(
+            f"DequantizeLinear layer {producer_layer['name']} has < 3 inputs"
+        )
+        return None
+
+    quantized_tensor_name = inputs[0]
+    scale_name = inputs[1]
+    zero_point_name = inputs[2]
+
+    # Get the quantized weight, scale, and zero_point
+    quantized_weight = analyzer.weights.get(quantized_tensor_name)
+    scale = analyzer.weights.get(scale_name)
+    zero_point = analyzer.weights.get(zero_point_name)
+
+    if quantized_weight is None:
+        logger.debug(f"Quantized tensor {quantized_tensor_name} not found in weights")
+        return None
+
+    if scale is None or zero_point is None:
+        logger.warning(
+            f"Missing scale or zero_point for DequantizeLinear: "
+            f"scale={scale_name}, zero_point={zero_point_name}"
+        )
+        return None
+
+    # Dequantize: real_value = scale * (quantized_value - zero_point)
+    try:
+        # Handle both scalar and per-channel quantization
+        if scale.ndim == 0:
+            # Scalar quantization
+            dequantized = scale * (
+                quantized_weight.astype(np.float32) - zero_point.astype(np.float32)
+            )
+        else:
+            # Per-channel quantization (scale and zero_point are vectors)
+            # Broadcast along the appropriate axis
+            axis = producer_layer.get("attributes", {}).get("axis", 1)
+
+            # Reshape scale and zero_point for broadcasting
+            shape = [1] * quantized_weight.ndim
+            shape[axis] = -1
+            scale_reshaped = scale.reshape(shape)
+            zero_point_reshaped = zero_point.reshape(shape)
+
+            dequantized = scale_reshaped * (
+                quantized_weight.astype(np.float32)
+                - zero_point_reshaped.astype(np.float32)
+            )
+
+        logger.debug(
+            f"Dequantized weight {quantized_tensor_name} -> {tensor_name}: "
+            f"shape={dequantized.shape}, dtype={dequantized.dtype}"
+        )
+        return dequantized
+
+    except Exception as e:
+        logger.error(f"Failed to dequantize weight {quantized_tensor_name}: {e}")
+        return None
 
 
 def extract_activation_layer(layer: Dict, layer_id: int) -> ActivationLayer:
@@ -321,72 +426,72 @@ def extract_reshape_layer(layer: Dict, layer_id: int) -> ReshapeLayer:
     )
 
 
-def extract_quantize_linear_layer(layer: Dict, layer_id: int) -> QuantizeLinearLayer:
-    """Extract QuantizeLinear layer from enriched dict"""
-    inputs = layer["resolved_inputs"]
-    outputs = layer["resolved_outputs"]
-    attrs = layer.get("attributes", {})
+# def extract_quantize_linear_layer(layer: Dict, layer_id: int) -> QuantizeLinearLayer:
+#     """Extract QuantizeLinear layer from enriched dict"""
+#     inputs = layer["resolved_inputs"]
+#     outputs = layer["resolved_outputs"]
+#     attrs = layer.get("attributes", {})
 
-    data_tensor = inputs[0]
-    scale_tensor = inputs[1]
-    zero_point_tensor = inputs[2]
+#     data_tensor = inputs[0]
+#     scale_tensor = inputs[1]
+#     zero_point_tensor = inputs[2]
 
-    if not scale_tensor.is_weight or scale_tensor.value is None:
-        raise ValueError(f"QuantizeLinear layer {layer_id} missing scale")
-    if not zero_point_tensor.is_weight or zero_point_tensor.value is None:
-        raise ValueError(f"QuantizeLinear layer {layer_id} missing zero_point")
+#     if not scale_tensor.is_weight or scale_tensor.value is None:
+#         raise ValueError(f"QuantizeLinear layer {layer_id} missing scale")
+#     if not zero_point_tensor.is_weight or zero_point_tensor.value is None:
+#         raise ValueError(f"QuantizeLinear layer {layer_id} missing zero_point")
 
-    return QuantizeLinearLayer(
-        layer_id=layer_id,
-        name=layer["name"],
-        op_type=layer["op_type"],
-        input_size=data_tensor.size,
-        output_size=outputs[0].size,
-        inputs=tuple(t.name for t in inputs),
-        outputs=tuple(t.name for t in outputs),
-        input_shape=data_tensor.shape,
-        output_shape=outputs[0].shape,
-        input_type=data_tensor.dtype,
-        output_type=outputs[0].dtype,
-        scale_name=scale_tensor.name,
-        zero_point_name=zero_point_tensor.name,
-        axis=attrs.get("axis"),
-    )
+#     return QuantizeLinearLayer(
+#         layer_id=layer_id,
+#         name=layer["name"],
+#         op_type=layer["op_type"],
+#         input_size=data_tensor.size,
+#         output_size=outputs[0].size,
+#         inputs=tuple(t.name for t in inputs),
+#         outputs=tuple(t.name for t in outputs),
+#         input_shape=data_tensor.shape,
+#         output_shape=outputs[0].shape,
+#         input_type=data_tensor.dtype,
+#         output_type=outputs[0].dtype,
+#         scale_name=scale_tensor.name,
+#         zero_point_name=zero_point_tensor.name,
+#         axis=attrs.get("axis"),
+#     )
 
 
-def extract_dequantize_linear_layer(
-    layer: Dict, layer_id: int
-) -> DequantizeLinearLayer:
-    """Extract DequantizeLinear layer from enriched dict"""
-    inputs = layer["resolved_inputs"]
-    outputs = layer["resolved_outputs"]
-    attrs = layer.get("attributes", {})
+# def extract_dequantize_linear_layer(
+#     layer: Dict, layer_id: int
+# ) -> DequantizeLinearLayer:
+#     """Extract DequantizeLinear layer from enriched dict"""
+#     inputs = layer["resolved_inputs"]
+#     outputs = layer["resolved_outputs"]
+#     attrs = layer.get("attributes", {})
 
-    data_tensor = inputs[0]
-    scale_tensor = inputs[1]
-    zero_point_tensor = inputs[2]
+#     data_tensor = inputs[0]
+#     scale_tensor = inputs[1]
+#     zero_point_tensor = inputs[2]
 
-    if not scale_tensor.is_weight or scale_tensor.value is None:
-        raise ValueError(f"DequantizeLinear layer {layer_id} missing scale")
-    if not zero_point_tensor.is_weight or zero_point_tensor.value is None:
-        raise ValueError(f"DequantizeLinear layer {layer_id} missing zero_point")
+#     if not scale_tensor.is_weight or scale_tensor.value is None:
+#         raise ValueError(f"DequantizeLinear layer {layer_id} missing scale")
+#     if not zero_point_tensor.is_weight or zero_point_tensor.value is None:
+#         raise ValueError(f"DequantizeLinear layer {layer_id} missing zero_point")
 
-    return DequantizeLinearLayer(
-        layer_id=layer_id,
-        name=layer["name"],
-        op_type=layer["op_type"],
-        input_size=data_tensor.size,
-        output_size=outputs[0].size,
-        inputs=tuple(t.name for t in inputs),
-        outputs=tuple(t.name for t in outputs),
-        input_shape=data_tensor.shape,
-        output_shape=outputs[0].shape,
-        input_type=data_tensor.dtype,
-        output_type=outputs[0].dtype,
-        scale_name=scale_tensor.name,
-        zero_point_name=zero_point_tensor.name,
-        axis=attrs.get("axis"),
-    )
+#     return DequantizeLinearLayer(
+#         layer_id=layer_id,
+#         name=layer["name"],
+#         op_type=layer["op_type"],
+#         input_size=data_tensor.size,
+#         output_size=outputs[0].size,
+#         inputs=tuple(t.name for t in inputs),
+#         outputs=tuple(t.name for t in outputs),
+#         input_shape=data_tensor.shape,
+#         output_shape=outputs[0].shape,
+#         input_type=data_tensor.dtype,
+#         output_type=outputs[0].dtype,
+#         scale_name=scale_tensor.name,
+#         zero_point_name=zero_point_tensor.name,
+#         axis=attrs.get("axis"),
+#     )
 
 
 LAYER_EXTRACTORS = {
@@ -398,9 +503,9 @@ LAYER_EXTRACTORS = {
     "Sigmoid": extract_activation_layer,
     "Tanh": extract_activation_layer,
     "Softmax": extract_activation_layer,
-    "QuantizeLinear": extract_quantize_linear_layer,
-    "DequantizeLinear": extract_dequantize_linear_layer,
     "Reshape": extract_reshape_layer,
+    # "QuantizeLinear": extract_quantize_linear_layer,
+    # "DequantizeLinear": extract_dequantize_linear_layer,
 }
 
 
@@ -460,7 +565,8 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
     input_tensor_names = tuple(input_info.get("names", []))
     output_tensor_names = tuple(output_info.get("names", []))
 
-    # Phase 1: Resolve all tensors
+    # Phase 1: Resolve all tensors (inputs/outputs) for each layer
+    # This includes shapes, dtypes, constant values for weights, etc
     onnx_layers = analyzer.analyze_layers()
     enriched_layers = []
     for layer_dict in onnx_layers:
@@ -476,15 +582,37 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
     # especially for fused layers, reshape layers, etc
     # This pass updates the resolved tensor dtypes by propagating known dtypes through the graph,
     # ensuring every tensor has a dtype before code generation (phase 3)
+
     tensor_dtypes: Dict[str, str] = {}
 
-    # Seed with network inputs
+    # Seed with network inputs - these define the interface types for the PLC
+    # IMPORTANT: Use the original input dtypes, not any quantized versions
     for inp_name, dtype in zip(input_info["names"], input_info["dtypes"]):
         tensor_dtypes[inp_name] = dtype
+        logger.debug(f"Network input {inp_name} has dtype {dtype}")
 
-    # Forward propagate dtypes
+    # Forward propagate dtypes through computation graph
     for enriched in enriched_layers:
-        # Update input dtypes
+        op_type = enriched["op_type"]
+
+        # For quantization layers, don't propagate their output dtype
+        # These are compile-time only and shouldn't affect PLC inference types
+        if op_type in ["QuantizeLinear", "DequantizeLinear"]:
+            # Still need to track what they produce, but use the INPUT dtype
+            # This preserves the floating-point nature through the graph
+            for resolved_input in enriched["resolved_inputs"]:
+                if not resolved_input.is_weight and resolved_input.dtype is not None:
+                    # Use the input dtype for outputs (e.g., FLOAT stays FLOAT)
+                    for out_name in enriched["outputs"]:
+                        tensor_dtypes[out_name] = resolved_input.dtype
+                        logger.debug(
+                            f"Quantization layer {enriched['name']}: "
+                            f"preserving dtype {resolved_input.dtype} for {out_name}"
+                        )
+                    break
+            continue
+
+        # Update input dtypes from known tensor_dtypes
         updated_inputs = []
         for resolved_input in enriched["resolved_inputs"]:
             dtype = resolved_input.dtype
@@ -503,7 +631,7 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
             )
         enriched["resolved_inputs"] = updated_inputs
 
-        # Infer output dtypes from first data input
+        # Infer output dtype from first data input
         first_data_dtype = None
         for inp in updated_inputs:
             if not inp.is_weight and inp.dtype is not None:
@@ -513,21 +641,21 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
         # Update output dtypes
         updated_outputs = []
         for resolved_output in enriched["resolved_outputs"]:
-            dtype = resolved_output.dtype or first_data_dtype
+            output_dtype = resolved_output.dtype or first_data_dtype
 
             updated_outputs.append(
                 ResolvedTensor(
                     name=resolved_output.name,
                     shape=resolved_output.shape,
-                    dtype=dtype,
+                    dtype=output_dtype,
                     size=resolved_output.size,
                     value=resolved_output.value,
                     is_weight=resolved_output.is_weight,
                 )
             )
 
-            if dtype is not None:
-                tensor_dtypes[resolved_output.name] = dtype
+            if output_dtype is not None:
+                tensor_dtypes[resolved_output.name] = output_dtype
 
         enriched["resolved_outputs"] = updated_outputs
 

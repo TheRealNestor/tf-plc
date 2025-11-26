@@ -1,5 +1,3 @@
-- dont hardcode real type everywhere in code gen, particularly when quantizing and seemingly scaling. What is the saturation?
-- ONNX: inputs like const_fold_opt_36. How to handle these?
 - Add Conv layers
 - Add dropout layers
 - Quantize/Dequantize layers (I think values for this are already accessible statically in the IR, probably a simple calculation to add this)

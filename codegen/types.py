@@ -99,8 +99,8 @@ class ReshapeLayer(BaseLayer):
 class QuantizeLinearLayer(BaseLayer):
     """Represents an ONNX QuantizeLinear layer"""
 
-    scale_name: str
-    zero_point_name: str
+    scale: float
+    zero_point: float
     axis: Optional[int] = None
 
 
@@ -108,8 +108,8 @@ class QuantizeLinearLayer(BaseLayer):
 class DequantizeLinearLayer(BaseLayer):
     """Represents an ONNX DequantizeLinear layer"""
 
-    scale_name: str
-    zero_point_name: str
+    scale: float
+    zero_point: float
     axis: Optional[int] = None
 
 @dataclass(frozen=True)
