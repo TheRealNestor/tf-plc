@@ -254,10 +254,10 @@ class ONNXModel:
                     input_info.get("shape", []).copy() if input_info.get("shape") else []
                 ),
             }
-        
+
         if op_type == 'DequantizeLinear':
             output_type = 'TensorProto.FLOAT'  # Default
-            
+
             # Try to infer from scale tensor (second input)
             if len(node.input) >= 2:
                 scale_name = node.input[1]
@@ -275,7 +275,7 @@ class ONNXModel:
                     scale_type = tensor_info[scale_name].get('onnx_type')
                     if scale_type:
                         output_type = scale_type
-            
+
             return {
                 'onnx_type': output_type,
                 'shape': input_info.get('shape', []).copy() if input_info.get('shape') else []
@@ -395,6 +395,86 @@ class ONNXModel:
         self.output_info = output_info
         return input_info, output_info
 
+    def resolve_static_dims(self, shape, tensor_name):
+        """
+        Extract static positive integer dimensions. We cannot feasibly handle dynamic/symbolic dims in PLC.
+        Raise failure if NO static dims exist or shape is purely symbolic.
+        """
+        static = [d for d in shape if isinstance(d, int) and d > 0]
+
+        if not static:
+            raise ValueError(
+                f"Cannot determine static size of tensor '{tensor_name}'. "
+                f"Shape={shape}. "
+                f"This model uses symbolic or dynamic dimensions "
+                f"which PLC Structured Text cannot represent."
+            )
+
+        return static
+
+    def static_product(self, shape, tensor_name):
+        """
+        Compute product of static dims only.
+        Raises an error if symbolic or unknown dims prevent determining a static size.
+        """
+        static = self.resolve_static_dims(shape, tensor_name)
+        return int(np.prod(static))
+
+    def get_tensor_size(self, tensor_name: str) -> int:
+        """
+        Get the size of a tensor from either weights (constants) or tensor_info (dynamic).
+
+        Args:
+            tensor_name: Name of the tensor
+            analyzer: ONNX model analyzer
+
+        Returns:
+            int: Total number of elements in the tensor
+        """
+        # Check if it's a constant weight first
+        if tensor_name in self.weights:
+            size = self.weights[tensor_name].size
+            logger.debug(f"Tensor '{tensor_name}' is a constant with size {size}")
+            return size
+
+        # Otherwise look in tensor_info for dynamic tensors
+        if tensor_name in self.tensor_info:
+            shape = self.tensor_info[tensor_name]["shape"]
+            size = self.static_product(shape, tensor_name)
+            logger.debug(f"Tensor '{tensor_name}' has shape {shape}, size {size}")
+            return size
+
+        # Not found anywhere
+        raise ValueError(
+            f"Cannot find tensor '{tensor_name}' in either weights or tensor_info. "
+            f"Cannot determine size."
+        )
+
+    def get_weights_and_biases(
+        self, layer_inputs: List[str]
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """
+        Extract weight matrix (2D) and bias vector (1D) from layer inputs.
+
+        Args:
+            layer_inputs: List of input tensor names
+
+        Returns:
+            Tuple of (weight_tensor, bias_tensor), either may be None
+        """
+        weight_tensor = None
+        bias_tensor = None
+
+        for name in layer_inputs:
+            if name in self.weights:
+                tensor = self.weights[name]
+                if len(tensor.shape) == 2:
+                    weight_tensor = tensor
+                elif len(tensor.shape) == 1:
+                    bias_tensor = tensor
+
+        return weight_tensor, bias_tensor
+
     def print_model_summary(self):
         """Print a comprehensive summary of the model."""
         if not self.model:
@@ -438,6 +518,7 @@ class ONNXModel:
         for op, count in sorted(layer_types.items()):
             print(f"  {op}: {count}")
         print("=" * 60)
+
 
 def load_and_analyze_onnx_model(model_path: str | Path) -> ONNXModel:
     """
