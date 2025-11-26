@@ -2,142 +2,216 @@
 ONNX to Intermediate Representation (IR) Transformation Module
 """
 
-# import everything from types.py
 from .types import *
-from typing import Dict
-import numpy as np
 from .onnx_model import ONNXModel
-
+from typing import Dict, List
+from collections import deque, defaultdict
+from dataclasses import dataclass
+import numpy as np
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-def extract_common_layer_info(layer: Dict, layer_id: int) -> Dict:
-    layer_name = layer.get("name") or f"{layer['op_type']}_{layer_id}"
+@dataclass
+class ResolvedTensor:
+    """Fully resolved tensor information (all static)"""
+
+    name: str
+    shape: Tuple[int, ...]
+    dtype: Optional[str]
+    size: int
+    value: Optional[np.ndarray]  # None if not a constant/weight
+    is_weight: bool
+
+
+def resolve_layer_tensors(layer_dict: Dict, analyzer: ONNXModel) -> Dict:
+    """
+    Enrich layer dict with fully resolved tensor information.
+
+    This is the ONLY place where analyzer is used - after this,
+    extraction is purely dict-to-IR transformation.
+    """
+    resolved_inputs = []
+
+    for inp_name in layer_dict["inputs"]:
+        tensor_info = analyzer.tensor_info.get(inp_name, {})
+        shape = tensor_info.get("shape", ())
+        is_weight = inp_name in analyzer.weights
+
+        if is_weight:
+            # Weights must be fully static
+            if any(isinstance(dim, str) or dim is None for dim in shape):
+                raise ValueError(
+                    f"Symbolic dimension in weight tensor {inp_name}: {shape}"
+                )
+            static_shape = tuple(shape)
+            size = int(np.prod(shape)) if shape else 0
+        else:
+            # Data tensors: skip symbolic/batch dimensions when calculating size
+            static_dims = [d for d in shape if isinstance(d, int) and d > 0]
+            static_shape = tuple(static_dims) if static_dims else ()
+            size = int(np.prod(static_dims)) if static_dims else 0
+
+        resolved_inputs.append(
+            ResolvedTensor(
+                name=inp_name,
+                shape=static_shape,
+                dtype=tensor_info.get("onnx_type"),
+                size=size,
+                value=analyzer.weights.get(inp_name),
+                is_weight=is_weight,
+            )
+        )
+
+    resolved_outputs = []
+    for out_name in layer_dict["outputs"]:
+        tensor_info = analyzer.tensor_info.get(out_name, {})
+        shape = tensor_info.get("shape", ())
+
+        # Skip symbolic dimensions
+        static_dims = [d for d in shape if isinstance(d, int) and d > 0]
+        static_shape = tuple(static_dims) if static_dims else ()
+        size = int(np.prod(static_dims)) if static_dims else 0
+
+        resolved_outputs.append(
+            ResolvedTensor(
+                name=out_name,
+                shape=static_shape,
+                dtype=tensor_info.get("onnx_type"),
+                size=size,
+                value=None,
+                is_weight=False,
+            )
+        )
 
     return {
-        "layer_id": layer_id,
-        "name": layer_name,
-        "op_type": layer["op_type"],
-        "inputs": tuple(layer.get("inputs", ())),
-        "outputs": tuple(layer.get("outputs", ())),
+        **layer_dict,
+        "resolved_inputs": resolved_inputs,
+        "resolved_outputs": resolved_outputs,
     }
 
 
-def extract_type_info(layer: Dict, analyzer: ONNXModel) -> Dict:
-    """Extract type and shape information for layer inputs/outputs"""
-    type_info: Dict[str, object] = {}
+def extract_activation_layer(layer: Dict, layer_id: int) -> ActivationLayer:
+    """Extract activation layer from enriched dict"""
+    inputs = layer["resolved_inputs"]
+    outputs = layer["resolved_outputs"]
 
-    if layer.get("inputs"):
-        input_name = layer["inputs"][0]
-        if input_name in analyzer.tensor_info:
-            info = analyzer.tensor_info[input_name]
-            shape = info.get("shape", [])
-            if shape:
-                type_info["input_type"] = info.get("onnx_type")
-                type_info["input_shape"] = tuple(shape)
-        else:
-            logger.warning(
-                f"Missing tensor_info for input '{input_name}' of layer "
-                f"{layer.get('name', layer['op_type'])}"
-            )
+    input_tensor = inputs[0]
+    output_tensor = outputs[0]
 
-    if layer.get("outputs"):
-        output_name = layer["outputs"][0]
-        if output_name in analyzer.tensor_info:
-            info = analyzer.tensor_info[output_name]
-            shape = info.get("shape", [])
-            if shape:
-                type_info["output_type"] = info.get("onnx_type")
-                type_info["output_shape"] = tuple(shape)
-        else:
-            logger.warning(
-                f"Missing tensor_info for output '{output_name}' of layer "
-                f"{layer.get('name', layer['op_type'])}"
-            )
-
-    return type_info
-
-
-def create_layer_base(layer: Dict, layer_id: int, analyzer: ONNXModel) -> Dict:
-    """Create base layer info with common fields populated"""
-    common_info = extract_common_layer_info(layer, layer_id)
-    type_info = extract_type_info(layer, analyzer)
-    return {**common_info, **type_info}
-
-
-def extract_activation_layer(
-    layer: Dict, layer_id: int, input_size: int, output_size: int, analyzer: ONNXModel
-) -> ActivationLayer:
-    layer_base = create_layer_base(layer, layer_id, analyzer)
     activation_type = ActivationType[layer["op_type"].upper()]
 
     return ActivationLayer(
-        **layer_base,
+        layer_id=layer_id,
+        name=layer["name"],
+        op_type=layer["op_type"],
         activation=activation_type,
-        input_size=input_size,
-        output_size=output_size,
+        input_size=input_tensor.size,
+        output_size=output_tensor.size,
+        inputs=tuple(t.name for t in inputs),
+        outputs=tuple(t.name for t in outputs),
+        input_shape=input_tensor.shape,
+        output_shape=output_tensor.shape,
+        input_type=input_tensor.dtype,
+        output_type=output_tensor.dtype,
     )
 
 
-def extract_add_layer(
-    layer: Dict,
-    layer_id: int,
-    input_size: int,
-    output_size: int,
-    analyzer: ONNXModel,
-) -> AddLayer:
-    base_info = create_layer_base(layer, layer_id, analyzer)
+def extract_add_layer(layer: Dict, layer_id: int) -> AddLayer:
+    """Extract Add layer from enriched dict"""
+    inputs = layer["resolved_inputs"]
+    outputs = layer["resolved_outputs"]
 
-    _, bias_tensor = analyzer.get_weights_and_biases(layer["inputs"])
+    input_tensor = inputs[0]
+    bias_tensor = inputs[1]
 
-    if bias_tensor is None:
-        raise ValueError(f"Add layer {layer_id} missing required bias tensor")
+    if not bias_tensor.is_weight or bias_tensor.value is None:
+        raise ValueError(f"Add layer {layer_id} missing bias weight")
 
     return AddLayer(
-        **base_info, bias=bias_tensor, input_size=input_size, output_size=output_size
+        layer_id=layer_id,
+        name=layer["name"],
+        op_type=layer["op_type"],
+        input_size=input_tensor.size,
+        output_size=outputs[0].size,
+        inputs=tuple(t.name for t in inputs),
+        outputs=tuple(t.name for t in outputs),
+        input_shape=input_tensor.shape,
+        output_shape=outputs[0].shape,
+        input_type=input_tensor.dtype,
+        output_type=outputs[0].dtype,
+        bias=bias_tensor.value,
     )
 
 
-def extract_matmul_layer(
-    layer: Dict, layer_id: int, analyzer: ONNXModel
-) -> MatMulLayer:
-    base_info = create_layer_base(layer, layer_id, analyzer)
+def extract_matmul_layer(layer: Dict, layer_id: int) -> MatMulLayer:
+    """Extract MatMul layer from enriched dict"""
+    inputs = layer["resolved_inputs"]
+    outputs = layer["resolved_outputs"]
 
-    weight_tensor, _ = analyzer.get_weights_and_biases(layer["inputs"])
+    data_tensor = inputs[0]
+    weight_tensor = inputs[1]
 
-    if weight_tensor is None:
-        raise ValueError(f"MatMul layer {layer_id} missing required weight tensor")
+    if not weight_tensor.is_weight or weight_tensor.value is None:
+        raise ValueError(f"MatMul layer {layer_id} missing weight tensor")
 
-    input_size, output_size = weight_tensor.shape
+    weights = weight_tensor.value
+    input_size, output_size = weights.shape
+
     return MatMulLayer(
-        **base_info,
-        weights=weight_tensor,
+        layer_id=layer_id,
+        name=layer["name"],
+        op_type=layer["op_type"],
+        weights=weights,
         input_size=input_size,
         output_size=output_size,
+        inputs=tuple(t.name for t in inputs),
+        outputs=tuple(t.name for t in outputs),
+        input_shape=data_tensor.shape,
+        output_shape=outputs[0].shape,
+        input_type=data_tensor.dtype,
+        output_type=outputs[0].dtype,
     )
 
 
-def extract_gemm_layer(
-    layer: Dict, layer_id: int, analyzer: ONNXModel
-) -> GemmLayer:
-    base_info = create_layer_base(layer, layer_id, analyzer)
-
-    weight_tensor, bias_tensor = analyzer.get_weights_and_biases(layer["inputs"])
-
-    if weight_tensor is None:
-        raise ValueError(f"Gemm layer {layer_id} missing required weight tensor")
-
-    input_size, output_size = weight_tensor.shape
+def extract_gemm_layer(layer: Dict, layer_id: int) -> GemmLayer:
+    """Extract Gemm layer from enriched dict"""
+    inputs = layer["resolved_inputs"]
+    outputs = layer["resolved_outputs"]
     attrs = layer.get("attributes", {})
 
+    data_tensor = inputs[0]
+    weight_tensor = inputs[1]
+
+    if not weight_tensor.is_weight or weight_tensor.value is None:
+        raise ValueError(f"Gemm layer {layer_id} missing weight tensor")
+
+    weights = weight_tensor.value
+
+    # Optional bias
+    bias = None
+    if len(inputs) > 2:
+        bias_tensor = inputs[2]
+        if bias_tensor.is_weight and bias_tensor.value is not None:
+            bias = bias_tensor.value
+
+    input_size, output_size = weights.shape
+
     return GemmLayer(
-        **base_info,
-        weights=weight_tensor,
-        bias=bias_tensor,
+        layer_id=layer_id,
+        name=layer["name"],
+        op_type=layer["op_type"],
+        weights=weights,
+        bias=bias,
         input_size=input_size,
         output_size=output_size,
+        inputs=tuple(t.name for t in inputs),
+        outputs=tuple(t.name for t in outputs),
+        input_shape=data_tensor.shape,
+        output_shape=outputs[0].shape,
+        input_type=data_tensor.dtype,
+        output_type=outputs[0].dtype,
         alpha=attrs.get("alpha", 1.0),
         beta=attrs.get("beta", 1.0),
         transA=attrs.get("transA", False),
@@ -145,31 +219,51 @@ def extract_gemm_layer(
     )
 
 
-def extract_fused_gemm_layer(
-    layer: Dict, layer_id: int, analyzer: ONNXModel
-) -> FusedGemmLayer:
-    base_info = create_layer_base(layer, layer_id, analyzer)
-
-    weight_tensor, bias_tensor = analyzer.get_weights_and_biases(layer["inputs"])
+def extract_fused_gemm_layer(layer: Dict, layer_id: int) -> FusedGemmLayer:
+    """Extract FusedGemm layer from enriched dict"""
+    inputs = layer["resolved_inputs"]
+    outputs = layer["resolved_outputs"]
     attrs = layer.get("attributes", {})
 
-    if weight_tensor is None:
-        raise ValueError(f"FusedGemm layer {layer_id} missing required weight tensor")
+    data_tensor = inputs[0]
+    weight_tensor = inputs[1]
+
+    if not weight_tensor.is_weight or weight_tensor.value is None:
+        raise ValueError(f"FusedGemm layer {layer_id} missing weight tensor")
+
+    weights = weight_tensor.value
+
+    # Optional bias
+    bias = None
+    if len(inputs) > 2:
+        bias_tensor = inputs[2]
+        if bias_tensor.is_weight and bias_tensor.value is not None:
+            bias = bias_tensor.value
+
+    # Activation is required for FusedGemm
     if "activation" not in attrs:
         raise ValueError(
             f"FusedGemm layer {layer_id} missing required activation attribute"
         )
 
-    input_size, output_size = weight_tensor.shape
+    input_size, output_size = weights.shape
     activation_type = ActivationType[attrs["activation"].upper()]
 
     return FusedGemmLayer(
-        **base_info,
-        weights=weight_tensor,
-        bias=bias_tensor,
+        layer_id=layer_id,
+        name=layer["name"],
+        op_type=layer["op_type"],
+        weights=weights,
+        bias=bias,
         activation=activation_type,
         input_size=input_size,
         output_size=output_size,
+        inputs=tuple(t.name for t in inputs),
+        outputs=tuple(t.name for t in outputs),
+        input_shape=data_tensor.shape,
+        output_shape=outputs[0].shape,
+        input_type=data_tensor.dtype,
+        output_type=outputs[0].dtype,
         alpha=attrs.get("alpha", 1.0),
         beta=attrs.get("beta", 1.0),
         transA=attrs.get("transA", False),
@@ -177,111 +271,121 @@ def extract_fused_gemm_layer(
     )
 
 
-def extract_quantize_linear_layer(
-    layer: Dict, layer_id: int, analyzer: ONNXModel
-) -> QuantizeLinearLayer:
-    base_info = create_layer_base(layer, layer_id, analyzer)
+def extract_reshape_layer(layer: Dict, layer_id: int) -> ReshapeLayer:
+    """Extract Reshape layer from enriched dict"""
+    inputs = layer["resolved_inputs"]
+    outputs = layer["resolved_outputs"]
 
-    # QuantizeLinear(input, scale, zero_point)
-    input_name = layer["inputs"][0]
-    input_size = analyzer.get_tensor_size(input_name)
+    data_tensor = inputs[0]
+    shape_tensor = inputs[1]
 
-    # QuantizeLinear preserves the tensor shape
-    output_size = input_size
-    attrs = layer.get("attributes", {})
+    if not shape_tensor.is_weight or shape_tensor.value is None:
+        raise ValueError(f"Reshape layer {layer_id}: Target shape must be a constant")
 
-    return QuantizeLinearLayer(
-        **base_info,
-        scale_name=layer["inputs"][1],
-        zero_point_name=layer["inputs"][2],
-        axis=attrs.get("axis"),
-        input_size=input_size,
-        output_size=output_size,
-    )
+    target_shape = tuple(int(dim) for dim in shape_tensor.value)
+    input_size = data_tensor.size
 
-
-def extract_dequantize_linear_layer(
-    layer: Dict, layer_id: int, analyzer: ONNXModel
-) -> DequantizeLinearLayer:
-    base_info = create_layer_base(layer, layer_id, analyzer)
-    input_name = layer["inputs"][0]
-    input_size = analyzer.get_tensor_size(input_name)
-
-    # DequantizeLinear preserves the tensor shape
-    output_size = input_size
-    attrs = layer.get("attributes", {})
-
-    return DequantizeLinearLayer(
-        **base_info,
-        scale_name=layer["inputs"][1],
-        zero_point_name=layer["inputs"][2],
-        axis=attrs.get("axis"),
-        input_size=input_size,
-        output_size=output_size,
-    )
-
-
-def extract_reshape_layer(
-    layer: Dict, layer_id: int, analyzer: ONNXModel
-) -> ReshapeLayer:
-    base_info = create_layer_base(layer, layer_id, analyzer)
-
-    # The reshape target is usually a constant initializer
-    shape_input_name = layer["inputs"][1]
-    if shape_input_name in analyzer.weights:
-        raw_target = analyzer.weights[shape_input_name]
-        target_shape = tuple(int(dim) for dim in raw_target)
-    else:
-        raise ValueError(
-            f"Reshape layer {layer_id}: Target shape tensor '{shape_input_name}' "
-            f"is dynamic or missing. PLC code requires static reshape targets."
-        )
-
-    input_name = layer["inputs"][0]
-    input_info = analyzer.tensor_info.get(input_name)
-    if not input_info:
-        raise ValueError(
-            f"Reshape layer {layer_id}: Cannot determine input tensor info "
-            f"for '{input_name}'."
-        )
-
-    input_shape = input_info["shape"]
-    input_size = analyzer.static_product(input_shape, input_name)
-
+    # Handle -1 in target shape (infer dimension)
     if -1 in target_shape:
-        known_dims = [d for d in target_shape if isinstance(d, int) and d > 0]
-        known_prod = np.prod(known_dims) if known_dims else 1
+        known_dims = [d for d in target_shape if d > 0]
+        known_prod = int(np.prod(known_dims)) if known_dims else 1
 
         if known_prod == 0:
             raise ValueError(
-                f"Reshape layer {layer_id}: Invalid known dims in target shape {target_shape}"
+                f"Reshape layer {layer_id}: Invalid target shape {target_shape}"
             )
 
         inferred = input_size // known_prod
         target_shape = tuple(inferred if d == -1 else d for d in target_shape)
 
-    # Now validate the final target shape
-    if any(d <= 0 for d in target_shape):
-        raise ValueError(
-            f"Reshape layer {layer_id}: Resolved target shape still contains "
-            f"symbolic or invalid dims: {target_shape}"
-        )
-
     output_size = int(np.prod(target_shape))
 
     if output_size != input_size:
         raise ValueError(
-            f"Reshape layer {layer_id}: Cannot reshape tensor '{input_name}' "
-            f"from shape {input_shape} (size={input_size}) "
-            f"to target shape {target_shape} (size={output_size}). "
-            f"ONNX requires reshape() to preserve total size, but the dimensions "
-            f"do not match. This is not a symbolic-dim error; it is a size mismatch."
+            f"Reshape layer {layer_id}: Size mismatch - "
+            f"input size {input_size} != output size {output_size}"
         )
 
     return ReshapeLayer(
-        **base_info,
+        layer_id=layer_id,
+        name=layer["name"],
+        op_type=layer["op_type"],
         input_size=input_size,
         output_size=output_size,
+        inputs=tuple(t.name for t in inputs),
+        outputs=tuple(t.name for t in outputs),
+        input_shape=data_tensor.shape,
+        output_shape=target_shape,
+        input_type=data_tensor.dtype,
+        output_type=outputs[0].dtype,
+    )
+
+
+def extract_quantize_linear_layer(layer: Dict, layer_id: int) -> QuantizeLinearLayer:
+    """Extract QuantizeLinear layer from enriched dict"""
+    inputs = layer["resolved_inputs"]
+    outputs = layer["resolved_outputs"]
+    attrs = layer.get("attributes", {})
+
+    data_tensor = inputs[0]
+    scale_tensor = inputs[1]
+    zero_point_tensor = inputs[2]
+
+    if not scale_tensor.is_weight or scale_tensor.value is None:
+        raise ValueError(f"QuantizeLinear layer {layer_id} missing scale")
+    if not zero_point_tensor.is_weight or zero_point_tensor.value is None:
+        raise ValueError(f"QuantizeLinear layer {layer_id} missing zero_point")
+
+    return QuantizeLinearLayer(
+        layer_id=layer_id,
+        name=layer["name"],
+        op_type=layer["op_type"],
+        input_size=data_tensor.size,
+        output_size=outputs[0].size,
+        inputs=tuple(t.name for t in inputs),
+        outputs=tuple(t.name for t in outputs),
+        input_shape=data_tensor.shape,
+        output_shape=outputs[0].shape,
+        input_type=data_tensor.dtype,
+        output_type=outputs[0].dtype,
+        scale_name=scale_tensor.name,
+        zero_point_name=zero_point_tensor.name,
+        axis=attrs.get("axis"),
+    )
+
+
+def extract_dequantize_linear_layer(
+    layer: Dict, layer_id: int
+) -> DequantizeLinearLayer:
+    """Extract DequantizeLinear layer from enriched dict"""
+    inputs = layer["resolved_inputs"]
+    outputs = layer["resolved_outputs"]
+    attrs = layer.get("attributes", {})
+
+    data_tensor = inputs[0]
+    scale_tensor = inputs[1]
+    zero_point_tensor = inputs[2]
+
+    if not scale_tensor.is_weight or scale_tensor.value is None:
+        raise ValueError(f"DequantizeLinear layer {layer_id} missing scale")
+    if not zero_point_tensor.is_weight or zero_point_tensor.value is None:
+        raise ValueError(f"DequantizeLinear layer {layer_id} missing zero_point")
+
+    return DequantizeLinearLayer(
+        layer_id=layer_id,
+        name=layer["name"],
+        op_type=layer["op_type"],
+        input_size=data_tensor.size,
+        output_size=outputs[0].size,
+        inputs=tuple(t.name for t in inputs),
+        outputs=tuple(t.name for t in outputs),
+        input_shape=data_tensor.shape,
+        output_shape=outputs[0].shape,
+        input_type=data_tensor.dtype,
+        output_type=outputs[0].dtype,
+        scale_name=scale_tensor.name,
+        zero_point_name=zero_point_tensor.name,
+        axis=attrs.get("axis"),
     )
 
 
@@ -300,96 +404,178 @@ LAYER_EXTRACTORS = {
 }
 
 
-def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
-    """Convert ONNX model to intermediate representation"""
+def topological_sort(
+    layers: Dict[str, BaseLayer],
+    tensor_producers: Dict[str, str],
+    tensor_consumers: Dict[str, List[str]],
+    input_tensors: Tuple[str, ...],
+) -> List[str]:
+    """
+    Perform topological sort on the layer graph using Kahn's algorithm.
 
+    Returns list of layer names in execution order.
+    """
+    adj_list = defaultdict(list)
+    in_degree = {name: 0 for name in layers.keys()}
+
+    for layer_name, layer in layers.items():
+        for input_tensor in layer.inputs:
+            # Skip network inputs (they don't have producers)
+            if input_tensor in input_tensors:
+                continue
+
+            if input_tensor in tensor_producers:
+                producer = tensor_producers[input_tensor]
+                if producer != layer_name:  # Avoid self-loops
+                    adj_list[producer].append(layer_name)
+                    in_degree[layer_name] += 1
+
+    # Start with layers that have no dependencies
+    queue = deque([name for name, degree in in_degree.items() if degree == 0])
+    sorted_order = []
+
+    while queue:
+        current = queue.popleft()
+        sorted_order.append(current)
+
+        # Reduce in-degree for dependent layers
+        for neighbor in adj_list[current]:
+            in_degree[neighbor] -= 1
+            if in_degree[neighbor] == 0:
+                queue.append(neighbor)
+
+    # Check for cycles
+    if len(sorted_order) != len(layers):
+        missing = set(layers.keys()) - set(sorted_order)
+        raise ValueError(f"Cycle detected in layer graph: {missing}")
+
+    return sorted_order
+
+
+def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
+    """Convert ONNX model to graph-based intermediate representation."""
     logger.info("Converting ONNX model to IR...")
 
-    # Ensure tensor info is built
-    if not analyzer.tensor_info or not analyzer.input_info or not analyzer.output_info:
-        logger.debug("tensor_info missing; rebuilding...")
-        analyzer._build_tensor_info()
+    input_info, output_info = analyzer.get_input_output_info()
+    input_tensor_names = tuple(input_info.get("names", []))
+    output_tensor_names = tuple(output_info.get("names", []))
 
-    logger.debug(f"Available tensor_info keys: {list(analyzer.tensor_info.keys())}")
+    # Phase 1: Resolve all tensors
+    onnx_layers = analyzer.analyze_layers()
+    enriched_layers = []
+    for layer_dict in onnx_layers:
+        try:
+            enriched = resolve_layer_tensors(layer_dict, analyzer)
+            enriched_layers.append(enriched)
+        except Exception as e:
+            logger.error(f"Failed to resolve layer {layer_dict['name']}: {e}")
+            raise
 
-    input_name = list(analyzer.input_info.keys())[0]
-    output_name = list(analyzer.output_info.keys())[0]
+    # Phase 2: Propagate dtypes through the graph
+    # ONNX shape inference doesn't always populate dtype information for all intermediate layers,
+    # especially for fused layers, reshape layers, etc
+    # This pass updates the resolved tensor dtypes by propagating known dtypes through the graph,
+    # ensuring every tensor has a dtype before code generation (phase 3)
+    tensor_dtypes: Dict[str, str] = {}
 
-    input_info = analyzer.input_info[input_name]
-    output_info = analyzer.output_info[output_name]
+    # Seed with network inputs
+    for inp_name, dtype in zip(input_info["names"], input_info["dtypes"]):
+        tensor_dtypes[inp_name] = dtype
 
-    input_shape = input_info["shape"]
-    output_shape = output_info["shape"]
+    # Forward propagate dtypes
+    for enriched in enriched_layers:
+        # Update input dtypes
+        updated_inputs = []
+        for resolved_input in enriched["resolved_inputs"]:
+            dtype = resolved_input.dtype
+            if dtype is None and resolved_input.name in tensor_dtypes:
+                dtype = tensor_dtypes[resolved_input.name]
 
-    input_size = analyzer.static_product(input_shape, input_name)
-    output_size = analyzer.static_product(output_shape, output_name)
+            updated_inputs.append(
+                ResolvedTensor(
+                    name=resolved_input.name,
+                    shape=resolved_input.shape,
+                    dtype=dtype,
+                    size=resolved_input.size,
+                    value=resolved_input.value,
+                    is_weight=resolved_input.is_weight,
+                )
+            )
+        enriched["resolved_inputs"] = updated_inputs
 
-    logger.debug(f"Static model input size = {input_size}, from shape {input_shape}")
-    logger.debug(f"Static model output size = {output_size}, from shape {output_shape}")
+        # Infer output dtypes from first data input
+        first_data_dtype = None
+        for inp in updated_inputs:
+            if not inp.is_weight and inp.dtype is not None:
+                first_data_dtype = inp.dtype
+                break
 
-    ir_layers = []
-    layer_id = 0
-    idx = 0
+        # Update output dtypes
+        updated_outputs = []
+        for resolved_output in enriched["resolved_outputs"]:
+            dtype = resolved_output.dtype or first_data_dtype
 
-    while idx < len(analyzer.layers):
-        layer_dict = analyzer.layers[idx]
+            updated_outputs.append(
+                ResolvedTensor(
+                    name=resolved_output.name,
+                    shape=resolved_output.shape,
+                    dtype=dtype,
+                    size=resolved_output.size,
+                    value=resolved_output.value,
+                    is_weight=resolved_output.is_weight,
+                )
+            )
+
+            if dtype is not None:
+                tensor_dtypes[resolved_output.name] = dtype
+
+        enriched["resolved_outputs"] = updated_outputs
+
+    # Phase 3: Extract layers
+    layers_dict = {}
+    tensor_producers = {}
+    tensor_consumers = {}
+
+    for layer_id, layer_dict in enumerate(enriched_layers):
         op_type = layer_dict["op_type"]
-        extractor = LAYER_EXTRACTORS.get(op_type)
-        layer = None
-        consumed = 1
 
-        if extractor:
-            try:
-                if op_type in ["MatMul"]:
-                    layer = extractor(layer_dict, layer_id, analyzer)
-                elif op_type in ["Add"]:
-                    prev_layer = ir_layers[-1] if ir_layers else None
-                    curr_input_size = (
-                        prev_layer.output_size if prev_layer else input_size
-                    )
-                    curr_output_size = curr_input_size
-                    layer = extractor(
-                        layer_dict,
-                        layer_id,
-                        curr_input_size,
-                        curr_output_size,
-                        analyzer,
-                    )
-                elif op_type in ["Gemm", "FusedGemm"]:
-                    layer = extractor(layer_dict, layer_id, analyzer)
+        if op_type not in LAYER_EXTRACTORS:
+            logger.warning(f"Unsupported ONNX layer type: {op_type}, skipping")
+            continue
 
-                elif op_type in ["Relu", "Sigmoid", "Tanh", "Softmax"]:
-                    prev_layer = ir_layers[-1] if ir_layers else None
-                    curr_input_size = (
-                        prev_layer.output_size if prev_layer else input_size
-                    )
-                    curr_output_size = curr_input_size
-                    layer = extractor(
-                        layer_dict,
-                        layer_id,
-                        curr_input_size,
-                        curr_output_size,
-                        analyzer,
-                    )
-                elif op_type in ["QuantizeLinear", "DequantizeLinear", "Reshape"]:
-                    layer = extractor(layer_dict, layer_id, analyzer)
+        try:
+            extractor = LAYER_EXTRACTORS[op_type]
+            layer = extractor(layer_dict, layer_id)
 
-                if layer:
-                    ir_layers.append(layer)
-                    layer_id += 1
-            except Exception as e:
-                logger.error(f"Failed to extract layer {layer_id} ({op_type}): {e}")
-                raise
-        else:
-            logger.warning(f"Unsupported ONNX layer type: {op_type}")
+            layers_dict[layer.name] = layer
 
-        idx += consumed
+            # Track tensor producers and consumers
+            for output_tensor in layer.outputs:
+                tensor_producers[output_tensor] = layer.name
 
-    logger.info(f"Successfully converted {len(ir_layers)} layers to IR")
+            for input_tensor in layer.inputs:
+                if input_tensor not in tensor_consumers:
+                    tensor_consumers[input_tensor] = []
+                tensor_consumers[input_tensor].append(layer.name)
 
-    network = NetworkIR(
-        input_size=input_size, output_size=output_size, layers=tuple(ir_layers)
+            logger.debug(f"Extracted layer {layer_id}: {layer.name} ({op_type})")
+
+        except Exception as e:
+            logger.error(f"Failed to extract layer {layer_id} ({op_type}): {e}")
+            raise
+
+    # Phase 4: Topological sort
+    execution_order = topological_sort(
+        layers_dict, tensor_producers, tensor_consumers, input_tensor_names
     )
-    logger.info(network)
 
-    return network
+    logger.info(f"Created IR with {len(layers_dict)} layers in execution order")
+
+    return NetworkIR(
+        layers=layers_dict,
+        execution_order=execution_order,
+        tensor_producers=tensor_producers,
+        tensor_consumers=tensor_consumers,
+        input_tensors=input_tensor_names,
+        output_tensors=output_tensor_names,
+    )

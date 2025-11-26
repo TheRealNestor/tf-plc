@@ -143,18 +143,20 @@ def generate_footer() -> STCode:
 
 def generate_var_input(network: NetworkIR) -> STCode:
     """Generate VAR_INPUT section."""
-    if not network.layers:
+    if not network.execution_order:
         raise ValueError("Network has no layers defined.")
+    
+    first_layer = network.layers[network.execution_order[0]]
 
-    first_layer = network.layers[0]
     if not hasattr(first_layer, "input_type"):
         raise ValueError("First layer does not have input_type attribute.")
 
     input_type = plc_type_from_dtype(first_layer.input_type)
+    input_size = first_layer.input_size
 
     return STCode.from_lines(
         "VAR_INPUT",
-        f"    input_data : ARRAY[0..{network.input_size-1}] OF {input_type};",
+        f"    input_data : ARRAY[0..{input_size-1}] OF {input_type};",
         "END_VAR",
         "",
     )
@@ -162,18 +164,20 @@ def generate_var_input(network: NetworkIR) -> STCode:
 
 def generate_var_output(network: NetworkIR) -> STCode:
     """Generate VAR_OUTPUT section."""
-    if not network.layers:
-        raise ValueError("Network has no layers defined.")
+    if not network.execution_order:
+        raise ValueError("Network has no layers defined")
 
-    last_layer = network.layers[-1]
+    last_layer = network.layers[network.execution_order[-1]]
+
     if not hasattr(last_layer, "output_type"):
         raise ValueError("Last layer does not have output_type attribute.")
 
     output_type = plc_type_from_dtype(last_layer.output_type)
+    output_size = last_layer.output_size
 
     return STCode.from_lines(
         "VAR_OUTPUT",
-        f"    output_data : ARRAY[0..{network.output_size-1}] OF {output_type};",
+        f"    output_data : ARRAY[0..{output_size-1}] OF {output_type};",
         "END_VAR",
         "",
     )
@@ -208,7 +212,8 @@ def generate_constants_section(network: NetworkIR) -> STCode:
     """Generate VAR CONSTANT section (weights, biases, ...)."""
     code = STCode.from_lines("VAR CONSTANT")
 
-    for layer in network.layers:
+    for layer_name in network.execution_order:
+        layer = network.layers[layer_name]
         has_constants = False
 
         if hasattr(layer, "weights") and layer.weights is not None:
@@ -241,7 +246,8 @@ def generate_var_section(network: NetworkIR) -> STCode:
     code = STCode.from_lines("VAR")
 
     # Layer output variables
-    for layer in network.layers:
+    for layer_name in network.execution_order:
+        layer = network.layers[layer_name]
         code += generate_layer_output_variables(layer).indent()
         code += STCode.blank_line()
 
@@ -255,9 +261,10 @@ def generate_var_section(network: NetworkIR) -> STCode:
 
     # Check if any layer uses softmax activation
     has_softmax = any(
-        getattr(layer, "activation", None) == ActivationType.SOFTMAX
-        for layer in network.layers
+        getattr(network.layers[layer_name], "activation", None) == ActivationType.SOFTMAX
+        for layer_name in network.execution_order
     )
+
     if has_softmax:
         code += STCode.from_lines("    max_val : REAL;", "    exp_sum : REAL;")
 
@@ -459,20 +466,45 @@ def generate_layer_computation(layer, input_var: str, output_var: str) -> STCode
 def generate_forward_pass(network: NetworkIR) -> STCode:
     """Generate complete forward pass computation."""
     code = STCode.from_lines("(* Forward pass computation *)")
-    current_input = "input_data"
 
-    for idx, layer in enumerate(network.layers):
-        is_last = idx == len(network.layers) - 1
-        output_var = "output_data" if is_last else f"layer_{layer.layer_id}_output"
+    # Map tensor names to their ST variable names
+    tensor_to_var: Dict[str, str] = {}
 
-        code += generate_layer_computation(layer, current_input, output_var)
+    # Map network input tensors to input_data
+    for input_tensor in network.input_tensors:
+        tensor_to_var[input_tensor] = "input_data"
+
+    # Process layers in topological order
+    for layer_name in network.execution_order:
+        layer = network.layers[layer_name]
+
+        # Determine input variable
+        # For now, handle single-input layers (extend later)
+        if layer.inputs:
+            primary_input_tensor = layer.inputs[0]
+            input_var = tensor_to_var.get(primary_input_tensor, "input_data")
+        else:
+            input_var = "input_data"
+
+        # Determine output variable
+        # If this layer produces a netowkr output, use output_data
+        produces_network_output = any(
+            network.is_network_output(out) for out in layer.outputs
+        )
+
+        output_var = "output_data" if produces_network_output else f"layer_{layer.layer_id}_output"
+
+        # Generate layer computation code
+        code += generate_layer_computation(layer, input_var, output_var)
         code += STCode.blank_line()
 
-        current_input = output_var
+        # Map this layer's output tensors to their variable
+        for output_tensor in layer.outputs:
+            tensor_to_var[output_tensor] = output_var
 
     return code
 
-
+    
 def generate_function_block(
     network: NetworkIR, fb_name: str = "NeuralNetwork"
 ) -> STCode:
