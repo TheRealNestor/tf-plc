@@ -24,9 +24,6 @@ VAR CONSTANT
 END_VAR
 
 VAR
-    (* Layer 0 output variable *)
-    layer_0_output : ARRAY[0..4] OF REAL;
-
     (* Layer 1 output variable *)
     layer_1_output : ARRAY[0..15] OF REAL;
 
@@ -60,16 +57,11 @@ VAR
 
 END_VAR
 
-(* Layer 0: Reshape (copy input to output) *)
-FOR i := 0 TO 4 DO
-    layer_0_output[i] := input_data[i];
-END_FOR;
-
 (* Layer 1: MatMul *)
 FOR j := 0 TO 15 DO
     sum := 0.0;
     FOR i := 0 TO 4 DO
-        sum := sum + layer_0_output[i] * weights_1[i * 16 + j];
+        sum := sum + input_data[i] * weights_1[i * 16 + j];
     END_FOR;
     layer_1_output[j] := sum;
 END_FOR;

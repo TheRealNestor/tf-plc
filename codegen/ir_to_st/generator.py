@@ -787,9 +787,10 @@ def generate_function_block(
 
 
 def translate_ir_to_st(
-    network: NetworkIR, fb_name: str = "NeuralNetwork"
+    ir: NetworkIR, fb_name: str = "NeuralNetwork"
 ) -> str:
     """Translate the given NetworkIR to Structured Text code."""
-    return str(generate_function_block(network, fb_name))
-
+    builder = STCodeBuilder()
+    builder += generate_function_block(ir, fb_name)
     # TODO: might need to add openplc config / straton config generation later
+    return str(builder.build())

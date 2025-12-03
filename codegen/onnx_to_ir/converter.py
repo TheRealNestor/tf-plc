@@ -16,6 +16,28 @@ from .layer_extractors import LAYER_EXTRACTORS
 logger = logging.getLogger(__name__)
 
 
+def _resolve_skipped_tensors(layers: Dict[str, BaseLayer], mapping: Dict[str, str]):
+    """
+    Update layer inputs to bypass skipped layers.
+
+    If a layer's input is produced by a skipped layer, replace it with
+    the skipped layer's input (the actual source tensor).
+    """
+    for layer in layers.values():
+        updated_inputs = []
+        for inp in layer.inputs:
+            # Follow the mapping chain to find the real source
+            source = inp
+            while source in mapping:
+                source = mapping[source]
+            updated_inputs.append(source)
+
+        # Update the layer's inputs (this modifies the frozen dataclass)
+        if updated_inputs != list(layer.inputs):
+            object.__setattr__(layer, "inputs", tuple(updated_inputs))
+            logger.debug(f"Updated inputs for {layer.name}: {layer.inputs}")
+
+
 def topological_sort(
     layers: Dict[str, BaseLayer],
     tensor_producers: Dict[str, str],
@@ -69,46 +91,29 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
     """
     Convert ONNX model to intermediate representation (IR).
 
-    This is the main entry point for ONNX → IR conversion. It:
-    1. Resolves all tensor information (shapes, types, values)
-    2. Infers shapes for operations where ONNX info is incomplete
-    3. Extracts each layer to an IR object
-    4. Topologically sorts layers for execution order
-
-    Args:
-        analyzer: Loaded and analyzed ONNX model
-
-    Returns:
-        NetworkIR object with layers, execution order, and graph structure
+    This creates a complete IR without optimization.
+    Use IROptimizer for post-processing.
     """
     logger.info("Converting ONNX model to IR...")
 
-    # Initialize resolver (handles tensor resolution + shape tracking)
     resolver = TensorResolver(analyzer)
-
-    # Get network I/O
     input_info, output_info = analyzer.get_input_output_info()
     input_tensors = tuple(input_info["names"])
     output_tensors = tuple(output_info["names"])
 
-    # Storage
     layers: Dict[str, BaseLayer] = {}
     tensor_producers: Dict[str, str] = {}
     tensor_consumers: Dict[str, List[str]] = defaultdict(list)
 
     # Process each layer
     for layer_id, layer_dict in enumerate(analyzer.layers):
-        # Step 1: Resolve tensors (uses known shapes from ONNX + previous layers)
-        enriched_layer = resolver.resolve_layer_tensors(layer_dict)
 
-        # Step 2: Infer output shape from operation semantics
+        enriched_layer = resolver.resolve_layer_tensors(layer_dict)
         _, output_shape = infer_layer_shapes(enriched_layer)
 
-        # Step 3: Store inferred shape for next layer's inputs
         for out_name in enriched_layer["outputs"]:
             resolver.store_inferred_shape(out_name, output_shape)
 
-        # Step 4: Update resolved outputs with inferred shape
         if output_shape and enriched_layer["resolved_outputs"]:
             enriched_layer["resolved_outputs"] = [
                 ResolvedTensor(
@@ -122,7 +127,6 @@ def onnx_to_ir(analyzer: ONNXModel) -> NetworkIR:
                 for out in enriched_layer["resolved_outputs"]
             ]
 
-        # Step 5: Extract to IR layer object
         op_type = enriched_layer["op_type"]
         if op_type in LAYER_EXTRACTORS:
             try:
