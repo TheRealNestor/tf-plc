@@ -19,7 +19,7 @@ class RemoveIdentityPass(OptimizationPass):
         """Find and mark all Identity layers for removal."""
         for name, layer in ir.layers.items():
             if layer.op_type == "Identity":
-                self.mark_for_removal(layer)
+                self.bypass_layer(layer)
                 logger.debug(f"Marked Identity layer for removal: {name}")
 
         if self.removed_layers:

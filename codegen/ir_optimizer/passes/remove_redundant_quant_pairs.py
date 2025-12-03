@@ -47,8 +47,7 @@ class RemoveRedundantQuantPairPass(OptimizationPass):
                         )
 
                         if scale_match and zp_match:
-                            self.mark_for_removal(layer)
-                            self.mark_for_removal(next_layer)
+                            self.bypass_layer_chain([layer, next_layer])
                             pairs_found += 1
                             logger.debug(
                                 f"Removing redundant Quant-Dequant pair: {layer_name} -> {consumers[0]}"

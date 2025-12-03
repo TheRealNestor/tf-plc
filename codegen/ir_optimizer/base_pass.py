@@ -4,7 +4,7 @@ Base class for IR optimization passes.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Set, Dict
+from typing import List, Set, Dict
 from ..types import NetworkIR, BaseLayer
 
 logger = logging.getLogger(__name__)
@@ -33,15 +33,13 @@ class OptimizationPass(ABC):
         pass
 
     def mark_for_removal(self, layer: BaseLayer):
-        """Mark a layer for removal and create tensor mapping."""
-        self.removed_layers.add(layer.name)
+        """
+        Mark a layer for removal.
 
-        # Map output to input (pass-through)
-        if len(layer.inputs) > 0 and len(layer.outputs) > 0:
-            input_tensor = layer.inputs[0]
-            for output_tensor in layer.outputs:
-                self.tensor_mapping[output_tensor] = input_tensor
-                logger.debug(f"Mapped {output_tensor} -> {input_tensor}")
+        Note: This does NOT create tensor mappings. Use bypass_layer() if you
+        want automatic remapping, or manually call remap_tensor() for custom logic.
+        """
+        self.removed_layers.add(layer.name)
 
     def should_remove(self, layer_name: str) -> bool:
         """Check if a layer is marked for removal."""
@@ -53,3 +51,82 @@ class OptimizationPass(ABC):
         while source in self.tensor_mapping:
             source = self.tensor_mapping[source]
         return source
+
+    def remap_tensor(self, old_tensor: str, new_tensor: str):
+        """
+        Remap a tensor to point to a different source.
+        
+        Args:
+            old_tensor: Original tensor name
+            new_tensor: New tensor to use instead
+        """
+        self.tensor_mapping[old_tensor] = new_tensor
+
+    def bypass_layer(self, layer: BaseLayer):
+        """
+        Bypass a layer by remapping all its outputs to its first input.
+        
+        Common pattern for removing pass-through layers like
+        Identity, no-op Reshape, etc.
+        
+        Args:
+            layer: Layer to bypass
+        """
+        if layer.outputs and layer.inputs:
+            source_tensor = layer.inputs[0]
+            for output_tensor in layer.outputs:
+                self.remap_tensor(output_tensor, source_tensor)
+
+        self.mark_for_removal(layer)
+
+    def bypass_layer_chain(self, layers: List[BaseLayer]):
+        """
+        Bypass a chain of layers by remapping the last layer's outputs 
+        to the first layer's inputs.
+        
+        Useful for removing patterns like Quant → Dequant pairs.
+        
+        Args:
+            layers: List of consecutive layers to bypass (in order)
+        """
+        if not layers:
+            return
+
+        first_layer = layers[0]
+        last_layer = layers[-1]
+
+        if last_layer.outputs and first_layer.inputs:
+            source_tensor = first_layer.inputs[0]
+            for output_tensor in last_layer.outputs:
+                self.remap_tensor(output_tensor, source_tensor)
+
+        # Mark all layers in chain for removal
+        for layer in layers:
+            self.mark_for_removal(layer)
+
+
+    def replace_layer(
+        self, old_layer: BaseLayer, new_layer: BaseLayer, ir: "NetworkIR"
+    ):
+        """
+        Replace a layer with a new layer.
+
+        Removes the old layer from ir.layers and adds the new layer.
+        The new layer can have a different name than the old layer.
+
+        Args:
+            old_layer: Layer being replaced (will be removed)
+            new_layer: New layer to add
+            ir: NetworkIR to update
+        """
+        # Explicitly remove old layer
+        if old_layer.name in ir.layers:
+            del ir.layers[old_layer.name]
+
+        # Add new layer
+        ir.layers[new_layer.name] = new_layer
+
+        # Remap old outputs to new outputs
+        for old_out, new_out in zip(old_layer.outputs, new_layer.outputs):
+            if old_out != new_out:
+                self.remap_tensor(old_out, new_out)

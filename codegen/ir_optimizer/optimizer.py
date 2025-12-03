@@ -6,6 +6,7 @@ import logging
 from typing import List, Optional
 from collections import defaultdict
 
+from ..onnx_to_ir.converter import topological_sort
 from ..types import NetworkIR
 from .base_pass import OptimizationPass
 from .passes import (
@@ -13,6 +14,7 @@ from .passes import (
     RemoveNoOpReshapePass,
     RemoveRedundantQuantPairPass,
     RemoveWeightDequantPass,
+    FuseLinearActivationPass,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,7 @@ DEFAULT_PASSES: List[OptimizationPass] = [
     RemoveWeightDequantPass(),
     RemoveNoOpReshapePass(),
     RemoveRedundantQuantPairPass(),
+    FuseLinearActivationPass(),
 ]
 
 
@@ -65,56 +68,96 @@ class IROptimizer:
 
         return self.ir
 
-    def _rebuild_ir(self, removed_layers: set, tensor_mapping: dict) -> NetworkIR:
-        """Rebuild IR with removed layers and rewired tensors."""
-        if not removed_layers:
-            return self.ir
-
-        # 1. Remove layers
-        new_layers = {
+    def _filter_removed_layers(self, removed_layers: set) -> dict:
+        """Remove layers marked for deletion."""
+        return {
             name: layer
             for name, layer in self.ir.layers.items()
             if name not in removed_layers
         }
 
-        # 2. Rewire tensor references in remaining layers
-        for layer in new_layers.values():
-            # Remap inputs (follow mapping chain)
-            new_inputs = []
-            for inp in layer.inputs:
-                source = inp
-                while source in tensor_mapping:
-                    source = tensor_mapping[source]
-                new_inputs.append(source)
+    def _follow_tensor_mapping(self, tensor: str, tensor_mapping: dict) -> str:
+        """
+        Follow tensor mapping chain to find final tensor.
 
-            # Update layer inputs if changed
+        Handles transitive mappings: A->B, B->C results in A->C
+        """
+        source = tensor
+        while source in tensor_mapping:
+            source = tensor_mapping[source]
+        return source
+
+    def _rewire_layer_inputs(self, layers: dict, tensor_mapping: dict) -> None:
+        """Update layer inputs to follow tensor remapping."""
+        for layer in layers.values():
+            new_inputs = [
+                self._follow_tensor_mapping(inp, tensor_mapping) for inp in layer.inputs
+            ]
+
+            # Only update if changed (frozen dataclass workaround)
             if new_inputs != list(layer.inputs):
                 object.__setattr__(layer, "inputs", tuple(new_inputs))
 
-        # 3. Remap network outputs
-        new_output_tensors = []
-        for out in self.ir.output_tensors:
-            source = out
-            while source in tensor_mapping:
-                source = tensor_mapping[source]
-            new_output_tensors.append(source)
 
-            if source != out:
-                logger.info(f"Remapped network output: {out} -> {source}")
+    def _remap_network_outputs(self, tensor_mapping: dict) -> list:
+        """Remap network output tensors and log changes."""
+        new_outputs = []
+
+        for out in self.ir.output_tensors:
+            remapped = self._follow_tensor_mapping(out, tensor_mapping)
+            new_outputs.append(remapped)
+
+            if remapped != out:
+                logger.info(f"Remapped network output: {out} -> {remapped}")
+
+        return new_outputs
+
+    def _rebuild_graph_structure(self, layers: dict) -> tuple[dict, dict]:
+        """
+        Rebuild tensor producer/consumer maps.
+        
+        Returns:
+            (tensor_producers, tensor_consumers) tuple
+        """
+        tensor_producers = {}
+        tensor_consumers = defaultdict(list)
+
+        for layer in layers.values():
+            for inp in layer.inputs:
+                tensor_consumers[inp].append(layer.name)
+            for out in layer.outputs:
+                tensor_producers[out] = layer.name
+
+        return tensor_producers, dict(tensor_consumers)
+
+
+
+    def _rebuild_ir(self, removed_layers: set, tensor_mapping: dict) -> NetworkIR:
+        """Rebuild IR with removed layers and rewired tensors.
+        
+        Args:
+            removed_layers: Set of layer names to remove.
+            tensor_mapping: Dict mapping old tensor names to new tensor names.
+        Returns:
+            Rebuilt NetworkIR with layers removed and tensors rewired.
+        """
+        
+        if not removed_layers:
+            return self.ir
+
+        # 1. Remove layers
+        new_layers = self._filter_removed_layers(removed_layers)
+
+        # 2. Rewire tensor references in remaining layers
+        self._rewire_layer_inputs(new_layers, tensor_mapping)
+
+        # 3. Remap network outputs
+        new_output_tensors = self._remap_network_outputs(tensor_mapping)
 
         # 4. Rebuild graph structure
-        new_tensor_producers = {}
-        new_tensor_consumers = defaultdict(list)
-
-        for layer in new_layers.values():
-            for inp in layer.inputs:
-                new_tensor_consumers[inp].append(layer.name)
-            for out in layer.outputs:
-                new_tensor_producers[out] = layer.name
+        new_tensor_producers, new_tensor_consumers = self._rebuild_graph_structure(new_layers)
 
         # 5. Rebuild execution order
-        from ..onnx_to_ir.converter import topological_sort
-
         new_execution_order = topological_sort(
             new_layers, new_tensor_producers, self.ir.input_tensors
         )

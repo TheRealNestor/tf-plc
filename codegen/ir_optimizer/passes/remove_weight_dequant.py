@@ -31,7 +31,7 @@ class RemoveWeightDequantPass(OptimizationPass):
 
                     # If no producer, it's a constant/initializer
                     if producer is None:
-                        self.mark_for_removal(layer)
+                        self.bypass_layer(layer)
                         logger.debug(
                             f"Marked weight dequantization for removal: {name}"
                         )

@@ -31,6 +31,86 @@ def is_uniform_array(arr: np.ndarray) -> bool:
     return arr.size == 1 or np.all(arr == arr.flat[0])
 
 
+def get_layer_type_name(layer: LinearLayer, activation: ActivationType) -> str:
+    """Get descriptive name for layer type."""
+    if isinstance(layer, FusedGemmLayer):
+        return f"Fused Gemm + {activation.name}"
+    elif isinstance(layer, FusedLinearLayer):
+        return f"Fused Linear + {activation.name}"
+    elif isinstance(layer, GemmLayer):
+        return "Gemm"
+    else:
+        return "MatMul"
+
+# Configuration: which activations to inline (vs separate loop)
+INLINE_ACTIVATIONS = {
+    ActivationType.NONE,
+    ActivationType.RELU,
+    # ActivationType.SIGMOID,
+    # ActivationType.TANH,
+}
+
+def apply_activation_inline(activation: ActivationType, expr: str) -> str:
+    """Apply activation inline if possible, otherwise return expression unchanged."""
+    if activation == ActivationType.RELU:
+        return f"MAX({expr}, 0.0)"
+    elif activation == ActivationType.SIGMOID:
+        return f"1.0 / (1.0 + EXP(-({expr})))"
+    elif activation == ActivationType.TANH:
+        return f"((EXP({expr}) - EXP(-({expr}))) / (EXP({expr}) + EXP(-({expr}))))"
+    else:  # NONE, SOFTMAX, ...
+        return expr
+
+def needs_separate_activation(activation: ActivationType) -> bool:
+    """Check if activation needs separate loop."""
+    return activation not in INLINE_ACTIVATIONS
+
+def generate_weight_access(
+    layer: LinearLayer, input_var: str, layer_id: int, output_size: int
+) -> str:
+    """Generate the weight multiplication expression."""
+    weight_expr = f"weights_{layer_id}[i * {output_size} + j]"
+
+    if not layer.is_quantized():
+        return f"{input_var}[i] * {weight_expr}"
+
+    # Quantized weights
+    cast_func = numpy_to_plc_cast_func(layer.weights.dtype, "REAL")
+
+    # Scale expression
+    if is_uniform_array(layer.weight_scale):
+        scale_expr = f"weight_scale_{layer_id}"
+    else:
+        scale_expr = f"weight_scale_{layer_id}[j]"
+
+    # Zero point expression
+    if is_uniform_array(layer.weight_zero_point):
+        zp_expr = f"weight_zero_point_{layer_id}"
+    else:
+        zp_expr = f"weight_zero_point_{layer_id}[j]"
+
+    return f"{input_var}[i] * ({scale_expr} * {cast_func}({weight_expr} - {zp_expr}))"
+
+
+def build_final_linear_layer_expression(layer: LinearLayer, has_bias: bool) -> str:
+    """Build final expression with alpha, bias, beta."""
+    alpha = getattr(layer, "alpha", 1.0)
+    beta = getattr(layer, "beta", 1.0)
+
+    expr = "sum"
+
+    if alpha != 1.0:
+        expr = f"{alpha} * {expr}"
+
+    if has_bias:
+        bias_term = f"bias_{layer.layer_id}[j]"
+        if beta != 1.0:
+            bias_term = f"{beta} * {bias_term}"
+        expr = f"{expr} + {bias_term}"
+
+    return expr
+
+
 # ============================================================================
 # Header/Footer Generation
 # ============================================================================
@@ -76,7 +156,7 @@ def generate_input_output_vars(network: NetworkIR) -> STCode:
 
 
 # ============================================================================
-# Constants Section - Unified Weight/Bias Generation
+# Constants Section
 # ============================================================================
 
 
@@ -314,10 +394,15 @@ def generate_var_section(network: NetworkIR) -> STCode:
 def generate_activation_code(
     activation: ActivationType, input_var: str, output_var: str, size: int
 ) -> STCode:
-    """Generate activation code using builder pattern."""
+    """Generate activation code for activations that need separate loops."""
     builder = STCodeBuilder()
 
-    if activation == ActivationType.RELU:
+    if activation == ActivationType.NONE:
+        # Identity - should never reach here (handled inline)
+        raise ValueError("NONE activation should be handled inline")
+
+    elif activation == ActivationType.RELU:
+        # ReLU - can be inline but also support separate
         builder.add_line(f"FOR i := 0 TO {size-1} DO")
         with builder.indent():
             builder.add_line(f"{output_var}[i] := MAX({input_var}[i], 0.0);")
@@ -348,7 +433,7 @@ def generate_activation_code(
                 builder.add_line(f"max_val := {input_var}[i];")
             builder.add_line("END_IF;")
         builder.add_line("END_FOR;")
-        builder.add_line()
+        builder.add_line("")
 
         # Compute exp sum
         builder.add_line("exp_sum := 0.0;")
@@ -357,7 +442,7 @@ def generate_activation_code(
             builder.add_line(f"{output_var}[i] := EXP({input_var}[i] - max_val);")
             builder.add_line(f"exp_sum := exp_sum + {output_var}[i];")
         builder.add_line("END_FOR;")
-        builder.add_line()
+        builder.add_line("")
 
         # Normalize
         builder.add_line(f"FOR i := 0 TO {size-1} DO")
@@ -384,87 +469,40 @@ def generate_activation_layer_code(
 def generate_linear_layer_code(
     layer: LinearLayer, input_var: str, output_var: str
 ) -> STCode:
-    """
-    Unified code generator for all linear layers (MatMul, Gemm, FusedGemm).
-    Handles both float and quantized weights with optimized parameter storage.
-
-    Generates: Y = alpha * X * W + beta * B [+ activation]
-    """
+    """Generate code for all linear layer types."""
     builder = STCodeBuilder()
 
-    # Determine layer type for comment
-    if isinstance(layer, FusedGemmLayer):
-        layer_type = f"FusedGemm ({layer.activation.name})"
-    elif isinstance(layer, GemmLayer):
-        layer_type = "Gemm"
-    else:
-        layer_type = "MatMul"
+    activation = getattr(layer, "activation", ActivationType.NONE)
+    layer_type_name = get_layer_type_name(layer, activation)
 
-    builder.add_line(f"(* Layer {layer.layer_id}: {layer_type} *)")
+    # Header
+    builder.add_line(f"(* Layer {layer.layer_id}: {layer_type_name} *)")
 
-    # ✅ Use helper method
-    is_quantized = layer.is_quantized()
-
-    # Check if parameters are uniform (stored as scalars)
-    is_uniform_scale = is_quantized and is_uniform_array(layer.weight_scale)
-    is_uniform_zp = is_quantized and is_uniform_array(layer.weight_zero_point)
-
-    # Get alpha/beta (default to 1.0 for MatMul)
-    alpha = getattr(layer, "alpha", 1.0)
-    beta = getattr(layer, "beta", 1.0)
-    has_bias = layer.bias is not None
-
-    # Get cast function if quantized
-    if is_quantized:
-        cast_func = numpy_to_plc_cast_func(layer.weights.dtype, "REAL")
-
-    # Generate matrix multiplication
+    # Matrix multiplication
     builder.add_line(f"FOR j := 0 TO {layer.output_size-1} DO")
     with builder.indent():
         builder.add_line("sum := 0.0;")
         builder.add_line(f"FOR i := 0 TO {layer.input_size-1} DO")
         with builder.indent():
-            weight_expr = f"weights_{layer.layer_id}[i * {layer.output_size} + j]"
-
-            if is_quantized:
-                # Build scale and zero-point expressions based on storage
-                scale_expr = (f"weight_scale_{layer.layer_id}" if is_uniform_scale 
-                             else f"weight_scale_{layer.layer_id}[j]")
-                zp_expr = (f"weight_zero_point_{layer.layer_id}" if is_uniform_zp
-                          else f"weight_zero_point_{layer.layer_id}[j]")
-                
-                builder.add_line(
-                    f"sum := sum + {input_var}[i] * "
-                    f"({scale_expr} * {cast_func}({weight_expr} - {zp_expr}));"
-                )
-            else:
-                # Float path: direct multiplication
-                builder.add_line(f"sum := sum + {input_var}[i] * {weight_expr};")
-
+            weight_mult = generate_weight_access(
+                layer, input_var, layer.layer_id, layer.output_size
+            )
+            builder.add_line(f"sum := sum + {weight_mult};")
         builder.add_line("END_FOR;")
 
-        # Apply alpha/beta/bias
-        if has_bias:
-            if alpha != 1.0 or beta != 1.0:
-                builder.add_line(
-                    f"{output_var}[j] := {alpha} * sum + {beta} * bias_{layer.layer_id}[j];"
-                )
-            else:
-                builder.add_line(f"{output_var}[j] := sum + bias_{layer.layer_id}[j];")
-        else:
-            if alpha != 1.0:
-                builder.add_line(f"{output_var}[j] := {alpha} * sum;")
-            else:
-                builder.add_line(f"{output_var}[j] := sum;")
+        # Apply bias and activation inline
+        final_expr = build_final_linear_layer_expression(layer, layer.bias is not None)
+        activated_expr = apply_activation_inline(activation, final_expr)
+        builder.add_line(f"{output_var}[j] := {activated_expr};")
 
     builder.add_line("END_FOR;")
 
-    # Add activation if this is a FusedGemm
-    if isinstance(layer, FusedGemmLayer):
-        builder.add_line()
+    # Separate activation pass if needed
+    if needs_separate_activation(activation):
+        builder.add_line("")
         builder.add_code(
             generate_activation_code(
-                layer.activation, output_var, output_var, layer.output_size
+                activation, output_var, output_var, layer.output_size
             )
         )
 
@@ -617,6 +655,7 @@ LAYER_CODE_GENERATORS = {
     MatMulLayer: generate_linear_layer_code,
     GemmLayer: generate_linear_layer_code,
     FusedGemmLayer: generate_linear_layer_code,
+    FusedLinearLayer: generate_linear_layer_code,
     AddLayer: generate_add_code,
     ReshapeLayer: generate_reshape_code,
     ActivationLayer: generate_activation_layer_code,

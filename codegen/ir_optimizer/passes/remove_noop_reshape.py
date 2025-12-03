@@ -25,7 +25,7 @@ class RemoveNoOpReshapePass(OptimizationPass):
                     output_size = np.prod(layer.output_shape)
 
                     if input_size == output_size:
-                        self.mark_for_removal(layer)
+                        self.bypass_layer(layer)
                         logger.debug(
                             f"Marked no-op Reshape for removal: {name} "
                             f"({layer.input_shape} -> {layer.output_shape})"

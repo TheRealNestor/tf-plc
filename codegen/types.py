@@ -11,6 +11,7 @@ from enum import Enum
 class ActivationType(Enum):
     """Types of activation functions supported"""
 
+    NONE = "none"
     RELU = "relu"
     SIGMOID = "sigmoid"
     TANH = "tanh"
@@ -71,14 +72,13 @@ class LinearLayer(BaseLayer):
 @dataclass(frozen=True, kw_only=True)
 class MatMulLayer(LinearLayer):
     """Y = X * W"""
-
     pass
 
 
 @dataclass(frozen=True, kw_only=True)
 class GemmLayer(LinearLayer):
     """Y = alpha * X * W + beta * B"""
-    
+
     alpha: float = 1.0
     beta: float = 1.0
     transA: bool = False
@@ -86,9 +86,23 @@ class GemmLayer(LinearLayer):
 
 
 @dataclass(frozen=True, kw_only=True)
-class FusedGemmLayer(GemmLayer):
-    """Base class for Fused Gemm + Activation layers"""
+class FusedLinearLayer(LinearLayer):
+    """
+    This represents a fully-fused dense layer operation combining:
+    - Matrix multiplication (weights @ input)
+    - Bias addition
+    - Optional activation function
+    """
     activation: ActivationType
+
+
+@dataclass(frozen=True, kw_only=True)
+class FusedGemmLayer(FusedLinearLayer):
+    """Base class for Fused Gemm + Activation layers"""
+    alpha: float = 1.0
+    beta: float = 1.0
+    transA: bool = False
+    transB: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)

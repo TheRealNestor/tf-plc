@@ -24,12 +24,13 @@ def extract_activation_layer(
     """Extract activation layer."""
     inputs = layer["resolved_inputs"]
     outputs = layer["resolved_outputs"]
+    activation_type = layer["op_type"].upper() if layer["op_type"].upper() in ActivationType.__members__ else "NONE"
 
     return ActivationLayer(
         layer_id=layer_id,
         name=layer["name"],
         op_type=layer["op_type"],
-        activation=ActivationType[layer["op_type"].upper()],
+        activation=ActivationType[activation_type],
         input_size=inputs[0].size,
         output_size=outputs[0].size,
         inputs=tuple(t.name for t in inputs),
