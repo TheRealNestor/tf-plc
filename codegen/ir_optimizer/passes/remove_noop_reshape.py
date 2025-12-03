@@ -16,7 +16,7 @@ class RemoveNoOpReshapePass(OptimizationPass):
     def get_name(self) -> str:
         return "remove_noop_reshape"
 
-    def run(self, ir: NetworkIR) -> None:
+    def optimize(self, ir: NetworkIR) -> None:
         """Find and mark no-op Reshape layers for removal."""
         for name, layer in ir.layers.items():
             if isinstance(layer, ReshapeLayer):

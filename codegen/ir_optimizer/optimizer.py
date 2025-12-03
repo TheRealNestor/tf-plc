@@ -12,6 +12,7 @@ from .passes import (
     RemoveIdentityPass,
     RemoveNoOpReshapePass,
     FuseQuantDequantPass,
+    RemoveWeightDequantPass,
 )
 
 logger = logging.getLogger(__name__)
@@ -20,8 +21,10 @@ logger = logging.getLogger(__name__)
 # Default optimization passes (order matters)
 DEFAULT_PASSES = [
     RemoveIdentityPass(),
+    RemoveWeightDequantPass(),
     FuseQuantDequantPass(),
     RemoveNoOpReshapePass(),
+
 ]
 
 
@@ -52,7 +55,7 @@ class IROptimizer:
 
         for pass_instance in passes:
             logger.info(f"Running pass: {pass_instance.get_name()}")
-            pass_instance.run(self.ir)
+            pass_instance.optimize(self.ir)
 
             # Collect results
             all_removed_layers.update(pass_instance.removed_layers)

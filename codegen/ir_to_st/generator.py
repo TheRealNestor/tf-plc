@@ -6,82 +6,29 @@ This module is responsible for generating Structured Text (ST) code from the int
 
 from ..types import *
 from .st_code import *
+from .type_conversion import *
 
 import logging
-
 logger = logging.getLogger(__name__)
 
+# ===========================================================================
+# Utility Functions
+# ===========================================================================
 
-# ============================================================================
-# Type Utilities
-# ============================================================================
+def is_uniform_array(arr: np.ndarray) -> bool:
+    """
+    Check if all elements in array are identical.
 
+    Used to optimize storage of quantization parameters - if all values
+    are the same, we can store a single scalar instead of an array.
 
-def plc_type_from_dtype(dtype: str) -> str:
-    """Map ONNX data type strings to PLC data types."""
-    if dtype is None:
-        raise ValueError("IR layer data type is None; tensor_info is incomplete.")
+    Args:
+        arr: NumPy array to check
 
-    match dtype:
-        case "TensorProto.FLOAT":
-            return "REAL"
-        case "TensorProto.DOUBLE":
-            return "LREAL"
-        case "TensorProto.INT32":
-            return "DINT"
-        case "TensorProto.INT64":
-            return "LINT"
-        case "TensorProto.INT8":
-            return "SINT"
-        case "TensorProto.UINT8":
-            return "USINT"
-        case "TensorProto.INT16":
-            return "INT"
-        case "TensorProto.UINT16":
-            return "UINT"
-        case _:
-            logging.warning(
-                f"Data type {dtype} is not explicitly supported, adding placeholder."
-            )
-            raise NotImplementedError(f"Data type {dtype} is not supported.")
-
-
-def plc_type_from_numpy_dtype(np_dtype: np.dtype) -> str:
-    """Map NumPy dtype to PLC type."""
-    if np_dtype == np.float32:
-        return "REAL"
-    elif np_dtype == np.float64:
-        return "LREAL"
-    elif np_dtype == np.int8:
-        return "SINT"
-    elif np_dtype == np.uint8:
-        return "USINT"
-    elif np_dtype == np.int16:
-        return "INT"
-    elif np_dtype == np.uint16:
-        return "UINT"
-    elif np_dtype == np.int32:
-        return "DINT"
-    elif np_dtype == np.int64:
-        return "LINT"
-    else:
-        raise NotImplementedError(f"NumPy dtype {np_dtype} is not supported.")
-
-
-def cast_function_for_dtype(np_dtype: np.dtype) -> str:
-    """Get the PLC cast function for converting to REAL."""
-    if np_dtype == np.int8:
-        return "SINT_TO_REAL"
-    elif np_dtype == np.uint8:
-        return "USINT_TO_REAL"
-    elif np_dtype == np.int16:
-        return "INT_TO_REAL"
-    elif np_dtype == np.uint16:
-        return "UINT_TO_REAL"
-    elif np_dtype == np.int32:
-        return "DINT_TO_REAL"
-    else:
-        raise NotImplementedError(f"No cast function for dtype {np_dtype}")
+    Returns:
+        True if array has size 1 or all elements are identical
+    """
+    return arr.size == 1 or np.all(arr == arr.flat[0])
 
 
 # ============================================================================
@@ -109,7 +56,7 @@ def generate_input_output_vars(network: NetworkIR) -> STCode:
     last_layer_name = network.execution_order[-1]
     last_layer = network.layers[last_layer_name]
 
-    input_type = plc_type_from_dtype(first_layer.input_type)
+    input_type = plc_type_from_onnx_dtype(first_layer.input_type)
     code += STCode.from_lines(
         "VAR_INPUT",
         f"    input_data : ARRAY[0..{first_layer.input_size - 1}] OF {input_type};",
@@ -117,7 +64,7 @@ def generate_input_output_vars(network: NetworkIR) -> STCode:
         "",
     )
 
-    output_type = plc_type_from_dtype(last_layer.output_type)
+    output_type = plc_type_from_onnx_dtype(last_layer.output_type)
     code += STCode.from_lines(
         "VAR_OUTPUT",
         f"    output_data : ARRAY[0..{last_layer.output_size - 1}] OF {output_type};",
@@ -180,18 +127,15 @@ def generate_layer_weights(layer) -> STCode:
     """
     builder = STCodeBuilder()
 
-    # Generate weights array
-    is_quantized = hasattr(layer, "weight_scale") and layer.weight_scale is not None
+    is_quantized = isinstance(layer, LinearLayer) and layer.is_quantized()
 
     if is_quantized:
-        # Quantized weights - store as integers
-        weight_type = plc_type_from_numpy_dtype(layer.weights.dtype)
+        weight_type = numpy_to_plc_type(layer.weights.dtype)
         weights_code = generate_array_constant(
             f"weights_{layer.layer_id}", layer.weights, weight_type, is_integer=True
         )
     else:
-        # Float weights
-        weight_type = plc_type_from_dtype(layer.input_type)
+        weight_type = plc_type_from_onnx_dtype(layer.input_type)
         weights_code = generate_array_constant(
             f"weights_{layer.layer_id}", layer.weights, weight_type, is_integer=False
         )
@@ -200,11 +144,13 @@ def generate_layer_weights(layer) -> STCode:
 
     # Generate quantization parameters if present
     if is_quantized:
-        # Scale (always REAL)
-        if layer.weight_scale.size == 1:
+        # Scale - use scalar if uniform
+        if is_uniform_array(layer.weight_scale):
             builder.add_code(
                 generate_scalar_constant(
-                    f"weight_scale_{layer.layer_id}", layer.weight_scale.flat[0], "REAL"
+                    f"weight_scale_{layer.layer_id}",
+                    float(layer.weight_scale.flat[0]),
+                    "REAL",
                 )
             )
         else:
@@ -214,13 +160,13 @@ def generate_layer_weights(layer) -> STCode:
                 )
             )
 
-        # Zero point (matches weight type)
-        zp_type = plc_type_from_numpy_dtype(layer.weights.dtype)
-        if layer.weight_zero_point.size == 1:
+        # Zero point - use scalar if uniform
+        zp_type = numpy_to_plc_type(layer.weights.dtype)
+        if is_uniform_array(layer.weight_zero_point):
             builder.add_code(
                 generate_scalar_constant(
                     f"weight_zero_point_{layer.layer_id}",
-                    layer.weight_zero_point.flat[0],
+                    int(layer.weight_zero_point.flat[0]),
                     zp_type,
                     is_integer=True,
                 )
@@ -240,7 +186,7 @@ def generate_layer_weights(layer) -> STCode:
 
 def generate_layer_bias(layer) -> STCode:
     """Generate bias constant for a layer."""
-    bias_type = plc_type_from_dtype(layer.output_type)
+    bias_type = plc_type_from_onnx_dtype(layer.output_type)
     return generate_array_constant(f"bias_{layer.layer_id}", layer.bias, bias_type)
 
 
@@ -266,7 +212,7 @@ def generate_layer_quantization_params(layer) -> STCode:
     else:  # DequantizeLinearLayer
         dtype_str = layer.input_type
 
-    zp_type = plc_type_from_dtype(dtype_str)
+    zp_type = plc_type_from_onnx_dtype(dtype_str)
     builder.add_code(
         generate_array_constant(
             f"zero_point_{layer.layer_id}", layer.zero_point, zp_type, is_integer=True
@@ -325,7 +271,7 @@ def generate_var_section(network: NetworkIR) -> STCode:
         if any(network.is_network_output(out) for out in layer.outputs):
             continue
 
-        plc_type = plc_type_from_dtype(layer.output_type)
+        plc_type = plc_type_from_onnx_dtype(layer.output_type)
 
         code += STCode.from_lines(
             f"(* Layer {layer.layer_id} output variable *)",
@@ -435,124 +381,94 @@ def generate_activation_layer_code(
     return code
 
 
-def generate_matmul_code(layer: MatMulLayer, input_var: str, output_var: str) -> STCode:
-    """Generate MatMul code - handles both float and quantized weights."""
-    builder = STCodeBuilder()
-
-    builder.add_line(f"(* Layer {layer.layer_id}: MatMul *)")
-
-    is_quantized = hasattr(layer, "weight_scale") and layer.weight_scale is not None
-
-    if is_quantized:
-        # Quantized weights
-        is_per_tensor = layer.weight_scale.size == 1
-        cast_func = cast_function_for_dtype(layer.weights.dtype)
-
-        builder.add_line(f"FOR j := 0 TO {layer.output_size-1} DO")
-        with builder.indent():
-            builder.add_line("sum := 0.0;")
-            builder.add_line(f"FOR i := 0 TO {layer.input_size-1} DO")
-            with builder.indent():
-                if is_per_tensor:
-                    builder.add_line(
-                        f"sum := sum + {input_var}[i] * "
-                        f"(weight_scale_{layer.layer_id} * {cast_func}(weights_{layer.layer_id}[i * {layer.output_size} + j] - weight_zero_point_{layer.layer_id}));"
-                    )
-                else:
-                    builder.add_line(
-                        f"sum := sum + {input_var}[i] * "
-                        f"(weight_scale_{layer.layer_id}[j] * {cast_func}(weights_{layer.layer_id}[i * {layer.output_size} + j] - weight_zero_point_{layer.layer_id}[j]));"
-                    )
-            builder.add_line("END_FOR;")
-            builder.add_line(f"{output_var}[j] := sum;")
-        builder.add_line("END_FOR;")
-    else:
-        # Float weights
-        builder.add_line(f"FOR j := 0 TO {layer.output_size-1} DO")
-        with builder.indent():
-            builder.add_line("sum := 0.0;")
-            builder.add_line(f"FOR i := 0 TO {layer.input_size-1} DO")
-            with builder.indent():
-                builder.add_line(
-                    f"sum := sum + {input_var}[i] * weights_{layer.layer_id}[i * {layer.output_size} + j];"
-                )
-            builder.add_line("END_FOR;")
-            builder.add_line(f"{output_var}[j] := sum;")
-        builder.add_line("END_FOR;")
-
-    return builder.build()
-
-
-def generate_gemm_code(layer: GemmLayer, input_var: str, output_var: str) -> STCode:
-    """Generate Gemm code - handles both float and quantized weights."""
-    builder = STCodeBuilder()
-
-    builder.add_line(f"(* Layer {layer.layer_id}: Gemm *)")
-
-    is_quantized = hasattr(layer, "weight_scale") and layer.weight_scale is not None
-
-    if is_quantized:
-        # Quantized weights
-        is_per_tensor = layer.weight_scale.size == 1
-        cast_func = cast_function_for_dtype(layer.weights.dtype)
-
-        builder.add_line(f"FOR j := 0 TO {layer.output_size-1} DO")
-        with builder.indent():
-            builder.add_line("sum := 0.0;")
-            builder.add_line(f"FOR i := 0 TO {layer.input_size-1} DO")
-            with builder.indent():
-                if is_per_tensor:
-                    builder.add_line(
-                        f"sum := sum + {input_var}[i] * "
-                        f"(weight_scale_{layer.layer_id} * {cast_func}(weights_{layer.layer_id}[i * {layer.output_size} + j] - weight_zero_point_{layer.layer_id}));"
-                    )
-                else:
-                    builder.add_line(
-                        f"sum := sum + {input_var}[i] * "
-                        f"(weight_scale_{layer.layer_id}[j] * {cast_func}(weights_{layer.layer_id}[i * {layer.output_size} + j] - weight_zero_point_{layer.layer_id}[j]));"
-                    )
-            builder.add_line("END_FOR;")
-
-            if layer.bias is not None:
-                builder.add_line(
-                    f"{output_var}[j] := {layer.alpha} * sum + {layer.beta} * bias_{layer.layer_id}[j];"
-                )
-            else:
-                builder.add_line(f"{output_var}[j] := {layer.alpha} * sum;")
-        builder.add_line("END_FOR;")
-    else:
-        # Float weights
-        builder.add_line(f"FOR j := 0 TO {layer.output_size-1} DO")
-        with builder.indent():
-            builder.add_line("sum := 0.0;")
-            builder.add_line(f"FOR i := 0 TO {layer.input_size-1} DO")
-            with builder.indent():
-                builder.add_line(
-                    f"sum := sum + {input_var}[i] * weights_{layer.layer_id}[i * {layer.output_size} + j];"
-                )
-            builder.add_line("END_FOR;")
-
-            if layer.bias is not None:
-                builder.add_line(
-                    f"{output_var}[j] := {layer.alpha} * sum + {layer.beta} * bias_{layer.layer_id}[j];"
-                )
-            else:
-                builder.add_line(f"{output_var}[j] := {layer.alpha} * sum;")
-        builder.add_line("END_FOR;")
-
-    return builder.build()
-
-
-def generate_fused_gemm_code(
-    layer: FusedGemmLayer, input_var: str, output_var: str
+def generate_linear_layer_code(
+    layer: LinearLayer, input_var: str, output_var: str
 ) -> STCode:
-    """Generate FusedGemm layer code: Gemm followed by Activation"""
-    code = generate_gemm_code(layer, input_var, output_var)
-    code += STCode.blank_line()
-    code += generate_activation_code(
-        layer.activation, output_var, output_var, layer.output_size
-    )
-    return code
+    """
+    Unified code generator for all linear layers (MatMul, Gemm, FusedGemm).
+    Handles both float and quantized weights with optimized parameter storage.
+
+    Generates: Y = alpha * X * W + beta * B [+ activation]
+    """
+    builder = STCodeBuilder()
+
+    # Determine layer type for comment
+    if isinstance(layer, FusedGemmLayer):
+        layer_type = f"FusedGemm ({layer.activation.name})"
+    elif isinstance(layer, GemmLayer):
+        layer_type = "Gemm"
+    else:
+        layer_type = "MatMul"
+
+    builder.add_line(f"(* Layer {layer.layer_id}: {layer_type} *)")
+
+    # ✅ Use helper method
+    is_quantized = layer.is_quantized()
+
+    # Check if parameters are uniform (stored as scalars)
+    is_uniform_scale = is_quantized and is_uniform_array(layer.weight_scale)
+    is_uniform_zp = is_quantized and is_uniform_array(layer.weight_zero_point)
+
+    # Get alpha/beta (default to 1.0 for MatMul)
+    alpha = getattr(layer, "alpha", 1.0)
+    beta = getattr(layer, "beta", 1.0)
+    has_bias = layer.bias is not None
+
+    # Get cast function if quantized
+    if is_quantized:
+        cast_func = numpy_to_plc_cast_func(layer.weights.dtype, "REAL")
+
+    # Generate matrix multiplication
+    builder.add_line(f"FOR j := 0 TO {layer.output_size-1} DO")
+    with builder.indent():
+        builder.add_line("sum := 0.0;")
+        builder.add_line(f"FOR i := 0 TO {layer.input_size-1} DO")
+        with builder.indent():
+            weight_expr = f"weights_{layer.layer_id}[i * {layer.output_size} + j]"
+
+            if is_quantized:
+                # Build scale and zero-point expressions based on storage
+                scale_expr = (f"weight_scale_{layer.layer_id}" if is_uniform_scale 
+                             else f"weight_scale_{layer.layer_id}[j]")
+                zp_expr = (f"weight_zero_point_{layer.layer_id}" if is_uniform_zp
+                          else f"weight_zero_point_{layer.layer_id}[j]")
+                
+                builder.add_line(
+                    f"sum := sum + {input_var}[i] * "
+                    f"({scale_expr} * {cast_func}({weight_expr} - {zp_expr}));"
+                )
+            else:
+                # Float path: direct multiplication
+                builder.add_line(f"sum := sum + {input_var}[i] * {weight_expr};")
+
+        builder.add_line("END_FOR;")
+
+        # Apply alpha/beta/bias
+        if has_bias:
+            if alpha != 1.0 or beta != 1.0:
+                builder.add_line(
+                    f"{output_var}[j] := {alpha} * sum + {beta} * bias_{layer.layer_id}[j];"
+                )
+            else:
+                builder.add_line(f"{output_var}[j] := sum + bias_{layer.layer_id}[j];")
+        else:
+            if alpha != 1.0:
+                builder.add_line(f"{output_var}[j] := {alpha} * sum;")
+            else:
+                builder.add_line(f"{output_var}[j] := sum;")
+
+    builder.add_line("END_FOR;")
+
+    # Add activation if this is a FusedGemm
+    if isinstance(layer, FusedGemmLayer):
+        builder.add_line()
+        builder.add_code(
+            generate_activation_code(
+                layer.activation, output_var, output_var, layer.output_size
+            )
+        )
+
+    return builder.build()
 
 
 def generate_add_code(layer: AddLayer, input_var: str, output_var: str) -> STCode:
@@ -598,7 +514,7 @@ def generate_quantize_linear_code(
     builder.add_line(f"(* Layer {layer.layer_id}: {layer.name} - QuantizeLinear *)")
 
     # Get bounds and cast function from output type
-    output_plc_type = plc_type_from_dtype(layer.output_type)
+    output_plc_type = plc_type_from_onnx_dtype(layer.output_type)
 
     if layer.output_type == "TensorProto.INT8":
         min_val, max_val = -128, 127
@@ -698,16 +614,15 @@ def generate_dequantize_linear_code(
 
 # Mapping from layer type to code generator
 LAYER_CODE_GENERATORS = {
-    MatMulLayer: generate_matmul_code,
+    MatMulLayer: generate_linear_layer_code,
+    GemmLayer: generate_linear_layer_code,
+    FusedGemmLayer: generate_linear_layer_code,
     AddLayer: generate_add_code,
-    GemmLayer: generate_gemm_code,
-    FusedGemmLayer: generate_fused_gemm_code,
     ReshapeLayer: generate_reshape_code,
     ActivationLayer: generate_activation_layer_code,
     QuantizeLinearLayer: generate_quantize_linear_code,
     DequantizeLinearLayer: generate_dequantize_linear_code,
 }
-
 
 def generate_forward_pass(network: NetworkIR) -> STCode:
     """Generate the forward pass computation code for all layers."""

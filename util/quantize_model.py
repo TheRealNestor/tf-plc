@@ -256,19 +256,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Quantize TensorFlow models for deployment",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Quantization types:
-  dynamic    - Dynamic range quantization (weights only, default)
-  int8       - Full integer quantization (weights + activations)
-  float16    - Half-precision floating point quantization
-  int_only   - Integer-only quantization (inputs/outputs are int8)
-
-Examples:
-  %(prog)s model.keras
-  %(prog)s model.keras --type int8 --data data/temperature_data.csv
-  %(prog)s model.h5 --type float16 --output optimized_model.tflite
-  %(prog)s saved_model/ --type dynamic --output models/quantized.tflite
-        """)
+    )
     
     parser.add_argument("model", help="Path to the input model (.keras, .h5, or SavedModel directory)")
     parser.add_argument("--type", "-t", choices=["dynamic", "int8", "float16", "int_only"], 

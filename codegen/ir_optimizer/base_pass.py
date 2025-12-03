@@ -23,7 +23,7 @@ class OptimizationPass(ABC):
         pass
 
     @abstractmethod
-    def run(self, ir: NetworkIR) -> None:
+    def optimize(self, ir: NetworkIR) -> None:
         """
         Analyze IR and mark layers for removal.
 

@@ -15,7 +15,7 @@ class RemoveIdentityPass(OptimizationPass):
     def get_name(self) -> str:
         return "remove_identity"
 
-    def run(self, ir: NetworkIR) -> None:
+    def optimize(self, ir: NetworkIR) -> None:
         """Find and mark all Identity layers for removal."""
         for name, layer in ir.layers.items():
             if layer.op_type == "Identity":

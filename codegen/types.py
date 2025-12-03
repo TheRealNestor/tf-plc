@@ -60,18 +60,25 @@ class LinearLayer(BaseLayer):
     weight_scale: Optional[np.ndarray] = None
     weight_zero_point: Optional[np.ndarray] = None
 
+    def is_quantized(self) -> bool:
+        """Check if this layer has quantized weights."""
+        return self.weight_scale is not None
+    
+    def is_per_tensor_quantized(self) -> bool:
+        """Check if quantization is per-tensor (vs per-channel)."""
+        return self.is_quantized() and self.weight_scale.size == 1
 
 @dataclass(frozen=True, kw_only=True)
 class MatMulLayer(LinearLayer):
-    """Base class for MatMul layers"""
+    """Y = X * W"""
 
     pass
 
 
 @dataclass(frozen=True, kw_only=True)
 class GemmLayer(LinearLayer):
-    """Base class for Gemm layers"""
-
+    """Y = alpha * X * W + beta * B"""
+    
     alpha: float = 1.0
     beta: float = 1.0
     transA: bool = False
@@ -81,7 +88,6 @@ class GemmLayer(LinearLayer):
 @dataclass(frozen=True, kw_only=True)
 class FusedGemmLayer(GemmLayer):
     """Base class for Fused Gemm + Activation layers"""
-
     activation: ActivationType
 
 
@@ -149,10 +155,11 @@ class NetworkIR:
     
     def get_output_layers(self, layer_name: str) -> List[str]:
         """Get names of layers that consume outputs from the given layer"""
-        return [    
-            self.tensor_consumers[tensor_name]
+        return [
+            consumer
             for tensor_name in self.get_layer(layer_name).outputs
             if tensor_name in self.tensor_consumers
+            for consumer in self.tensor_consumers[tensor_name]
         ]
     
     def is_network_input(self, tensor_name: str) -> bool:

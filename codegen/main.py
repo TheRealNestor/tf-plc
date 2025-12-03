@@ -82,20 +82,6 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Compile ONNX neural network models to IEC 61131-3 Structured Text",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Basic compilation
-  python -m codegen.main model.onnx -o output.st
-
-  # Without optimization
-  python -m codegen.main model.onnx -o output.st --no-optimize
-
-  # Verbose output
-  python -m codegen.main model.onnx -o output.st -v
-
-  # Auto-generate output filename
-  python -m codegen.main model.onnx
-        """,
     )
 
     parser.add_argument("input", type=str, help="Path to input ONNX model file")
@@ -148,7 +134,9 @@ def main():
     if output_path is None:
         output_path = input_path.with_suffix(".st")
         if input_path.parent.name.lower() == "onnx":
-            output_path = input_path.parent.parent / "structured_text" / output_path.name
+            output_path = (
+                input_path.parent.parent / "structured_text" / output_path.name
+            )
 
         logger.info(f"Auto-generated output path: {output_path}")
 

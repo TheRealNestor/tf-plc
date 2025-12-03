@@ -39,26 +39,26 @@ VAR
 
 END_VAR
 
-(* Layer 1: Gemm *)
+(* Layer 1: FusedGemm (RELU) *)
 FOR j := 0 TO 15 DO
     sum := 0.0;
     FOR i := 0 TO 4 DO
         sum := sum + input_data[i] * weights_1[i * 16 + j];
     END_FOR;
-    layer_1_output[j] := 1.0 * sum + 1.0 * bias_1[j];
+    layer_1_output[j] := sum + bias_1[j];
 END_FOR;
 
 FOR i := 0 TO 15 DO
     layer_1_output[i] := MAX(layer_1_output[i], 0.0);
 END_FOR;
 
-(* Layer 2: Gemm *)
+(* Layer 2: FusedGemm (RELU) *)
 FOR j := 0 TO 11 DO
     sum := 0.0;
     FOR i := 0 TO 15 DO
         sum := sum + layer_1_output[i] * weights_2[i * 12 + j];
     END_FOR;
-    layer_2_output[j] := 1.0 * sum + 1.0 * bias_2[j];
+    layer_2_output[j] := sum + bias_2[j];
 END_FOR;
 
 FOR i := 0 TO 11 DO
@@ -71,7 +71,7 @@ FOR j := 0 TO 2 DO
     FOR i := 0 TO 11 DO
         sum := sum + layer_2_output[i] * weights_3[i * 3 + j];
     END_FOR;
-    layer_3_output[j] := 1.0 * sum + 1.0 * bias_3[j];
+    layer_3_output[j] := sum + bias_3[j];
 END_FOR;
 
 (* Layer 4: Activation (SOFTMAX) *)

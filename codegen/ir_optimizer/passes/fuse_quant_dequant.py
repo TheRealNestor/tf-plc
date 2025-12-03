@@ -2,12 +2,12 @@
 Fuse QuantizeLinear → DequantizeLinear pairs.
 """
 
-import logging
+import numpy as np
 from ..base_pass import OptimizationPass
 from ...types import NetworkIR, QuantizeLinearLayer, DequantizeLinearLayer
 
+import logging
 logger = logging.getLogger(__name__)
-
 
 class FuseQuantDequantPass(OptimizationPass):
     """Remove redundant QuantizeLinear → DequantizeLinear pairs."""
@@ -15,29 +15,25 @@ class FuseQuantDequantPass(OptimizationPass):
     def get_name(self) -> str:
         return "fuse_quant_dequant"
 
-    def run(self, ir: NetworkIR) -> None:
+    def optimize(self, network: NetworkIR) -> None:
         """Find and mark Quant-Dequant pairs for removal."""
-        for name, layer in ir.layers.items():
+
+        for layer_name in network.execution_order:
+            layer = network.get_layer(layer_name)
+
             if isinstance(layer, QuantizeLinearLayer):
-                # Find consumer of this layer's output
-                if len(layer.outputs) > 0:
-                    output_tensor = layer.outputs[0]
-                    consumers = ir.tensor_consumers.get(output_tensor, [])
+                # check if next layer is Dequantize with same params
+                consumers = network.get_output_layers(layer_name)
 
-                    # Only fuse if there's exactly one consumer and it's DequantizeLinear
-                    if len(consumers) == 1:
-                        consumer_name = consumers[0]
-                        consumer = ir.layers.get(consumer_name)
-
-                        if isinstance(consumer, DequantizeLinearLayer):
-                            # Mark both for removal
+                if len(consumers) == 1:
+                    next_layer = network.get_layer(consumers[0])
+                
+                    if isinstance(next_layer, DequantizeLinearLayer):
+                        if (np.array_equal(layer.scale, next_layer.scale) and
+                            np.array_equal(layer.zero_point, next_layer.zero_point)):
                             self.mark_for_removal(layer)
-                            self.mark_for_removal(consumer)
+                            self.mark_for_removal(next_layer)
                             logger.debug(
-                                f"Fusing Quant-Dequant pair: {name} -> {consumer_name}"
+                                f"Fusing Quant-Dequant pair and removing: {layer_name} -> {consumers[0]}"
                             )
 
-        if self.removed_layers:
-            logger.info(
-                f"Found {len(self.removed_layers) // 2} Quant-Dequant pairs to fuse"
-            )
