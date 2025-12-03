@@ -33,9 +33,6 @@ VAR
     (* Layer 3 output variable *)
     layer_3_output : ARRAY[0..2] OF REAL;
 
-    (* Layer 4 output variable *)
-    layer_4_output : ARRAY[0..2] OF REAL;
-
     (* Temporary computation variables *)
     i : DINT;
     j : DINT;
@@ -45,7 +42,6 @@ VAR
 
 END_VAR
 
-(* Forward pass computation *)
 (* Layer 0: Reshape (copy input to output) *)
 FOR i := 0 TO 4 DO
     layer_0_output[i] := input_data[i];

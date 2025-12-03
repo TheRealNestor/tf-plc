@@ -4,8 +4,8 @@ IR to Structured Text Code Generation Module
 This module is responsible for generating Structured Text (ST) code from the intermediate representation (IR) of a neural network.
 """
 
-from .types import *
-from .ir_to_st.st_code import *
+from ..types import *
+from .st_code import *
 
 import logging
 
@@ -784,3 +784,12 @@ def generate_function_block(
 
     logger.info(f"Generated {len(code.lines)} lines of ST code.")
     return code
+
+
+def translate_ir_to_st(
+    network: NetworkIR, fb_name: str = "NeuralNetwork"
+) -> str:
+    """Translate the given NetworkIR to Structured Text code."""
+    return str(generate_function_block(network, fb_name))
+
+    # TODO: might need to add openplc config / straton config generation later

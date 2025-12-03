@@ -56,6 +56,10 @@ class LinearLayer(BaseLayer):
     weights: np.ndarray
     bias: Optional[np.ndarray] = None  # Some linear layers may have bias
 
+    # Quantization metadata (None if weights are not quantized)
+    weight_scale: Optional[np.ndarray] = None
+    weight_zero_point: Optional[np.ndarray] = None
+
 
 @dataclass(frozen=True, kw_only=True)
 class MatMulLayer(LinearLayer):
@@ -99,8 +103,8 @@ class ReshapeLayer(BaseLayer):
 class QuantizeLinearLayer(BaseLayer):
     """Represents an ONNX QuantizeLinear layer"""
 
-    scale: float
-    zero_point: float
+    scale: np.ndarray
+    zero_point: np.ndarray
     axis: Optional[int] = None
 
 
@@ -108,8 +112,8 @@ class QuantizeLinearLayer(BaseLayer):
 class DequantizeLinearLayer(BaseLayer):
     """Represents an ONNX DequantizeLinear layer"""
 
-    scale: float
-    zero_point: float
+    scale: np.ndarray
+    zero_point: np.ndarray
     axis: Optional[int] = None
 
 @dataclass(frozen=True)

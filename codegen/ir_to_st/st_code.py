@@ -14,6 +14,14 @@ class STCode:
 
     lines: Tuple[str, ...]
 
+    def __str__(self) -> str:
+        """Return code as properly formatted string with newlines."""
+        return "\n".join(self.lines)
+
+    def __repr__(self) -> str:
+        """Return repr for debugging."""
+        return f"STCode({len(self.lines)} lines)"
+
     def __add__(self, other: "STCode") -> "STCode":
         """Combine two code blocks"""
         return STCode(self.lines + other.lines)

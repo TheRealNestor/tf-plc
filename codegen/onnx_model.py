@@ -49,9 +49,10 @@ class ONNXModel:
 
             self.graph = self.model.graph
 
-            # Automatically build tensor info and extract weights
+            # Automatically build tensor info, extract weights, and analyze layers
             self._build_tensor_info()
             self.extract_weights()
+            self.analyze_layers()
 
             return True
 
