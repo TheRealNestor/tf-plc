@@ -6,8 +6,7 @@ and improves performance by combining operations into a single loop.
 """
 
 import logging
-import numpy as np
-from typing import Optional, Dict
+from typing import Optional
 
 from ..base_pass import OptimizationPass
 from ...types import (
