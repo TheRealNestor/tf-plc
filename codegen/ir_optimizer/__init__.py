@@ -7,7 +7,7 @@ from .base_pass import OptimizationPass
 from .passes import (
     RemoveIdentityPass,
     RemoveNoOpReshapePass,
-    FuseQuantDequantPass,
+    RemoveRedundantQuantPairPass,
     RemoveWeightDequantPass,
 )
 
@@ -17,6 +17,6 @@ __all__ = [
     "OptimizationPass",
     "RemoveIdentityPass",
     "RemoveNoOpReshapePass",
-    "FuseQuantDequantPass",
+    "RemoveRedundantQuantPairPass",
     "RemoveWeightDequantPass",
 ]

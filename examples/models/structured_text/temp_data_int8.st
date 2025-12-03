@@ -30,12 +30,6 @@ VAR CONSTANT
 END_VAR
 
 VAR
-    (* Layer 0 output variable *)
-    layer_0_output : ARRAY[0..4] OF SINT;
-
-    (* Layer 2 output variable *)
-    layer_2_output : ARRAY[0..4] OF REAL;
-
     (* Layer 9 output variable *)
     layer_9_output : ARRAY[0..9] OF REAL;
 
@@ -69,21 +63,11 @@ VAR
 
 END_VAR
 
-(* Layer 0: tfl.quantize - QuantizeLinear *)
-FOR i := 0 TO 4 DO
-    layer_0_output[i] := LIMIT(-128, REAL_TO_SINT(ROUND(input_data[i] / 0.16862745583057404) + -128), 127);
-END_FOR;
-
-(* Layer 2: sequential_1/flatten_1/Reshape_dequant - DequantizeLinear *)
-FOR i := 0 TO 4 DO
-    layer_2_output[i] := 0.16862745583057404 * SINT_TO_REAL(layer_0_output[i] - -128);
-END_FOR;
-
 (* Layer 9: MatMul *)
 FOR j := 0 TO 9 DO
     sum := 0.0;
     FOR i := 0 TO 4 DO
-        sum := sum + layer_2_output[i] * (weight_scale_9[j] * SINT_TO_REAL(weights_9[i * 10 + j] - weight_zero_point_9));
+        sum := sum + input_data[i] * (weight_scale_9[j] * SINT_TO_REAL(weights_9[i * 10 + j] - weight_zero_point_9));
     END_FOR;
     layer_9_output[j] := sum;
 END_FOR;

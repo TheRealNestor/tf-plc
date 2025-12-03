@@ -11,66 +11,64 @@ from .base_pass import OptimizationPass
 from .passes import (
     RemoveIdentityPass,
     RemoveNoOpReshapePass,
-    FuseQuantDequantPass,
+    RemoveRedundantQuantPairPass,
     RemoveWeightDequantPass,
 )
 
 logger = logging.getLogger(__name__)
 
-
-# Default optimization passes (order matters)
-DEFAULT_PASSES = [
+DEFAULT_PASSES: List[OptimizationPass] = [
     RemoveIdentityPass(),
     RemoveWeightDequantPass(),
-    FuseQuantDequantPass(),
     RemoveNoOpReshapePass(),
-
+    RemoveRedundantQuantPairPass(),
 ]
 
 
 class IROptimizer:
     """Applies optimization passes to NetworkIR."""
 
-    def __init__(self, ir: NetworkIR):
+    def __init__(self, ir: NetworkIR, passes: Optional[List[OptimizationPass]] = None):
         self.ir = ir
+        self.passes = passes if passes is not None else DEFAULT_PASSES
 
-    def optimize(self, passes: Optional[List[OptimizationPass]] = None) -> NetworkIR:
+    def optimize(self) -> NetworkIR:
         """
         Apply optimization passes to the IR.
 
-        Args:
-            passes: List of pass instances to apply. If None, uses DEFAULT_PASSES.
+        Rebuilds IR between passes so each pass sees a clean, updated graph.
 
         Returns:
             Optimized NetworkIR
         """
-        if passes is None:
-            passes = DEFAULT_PASSES
+        initial_layer_count = len(self.ir.layers)
+        logger.info(f"Starting optimization with {initial_layer_count} layers")
 
-        logger.info(f"Applying {len(passes)} optimization passes...")
-
-        # Collect all removals and mappings
-        all_removed_layers = set()
-        all_tensor_mappings = {}
-
-        for pass_instance in passes:
+        # Run each pass and rebuild IR between passes
+        for pass_instance in self.passes:
             logger.info(f"Running pass: {pass_instance.get_name()}")
             pass_instance.optimize(self.ir)
 
-            # Collect results
-            all_removed_layers.update(pass_instance.removed_layers)
-            all_tensor_mappings.update(pass_instance.tensor_mapping)
+            # Rebuild IR after each pass if it removed layers
+            if pass_instance.removed_layers:
+                self.ir = self._rebuild_ir(
+                    pass_instance.removed_layers, pass_instance.tensor_mapping
+                )
 
-        # Rebuild IR with all optimizations applied
-        return self._rebuild_ir(all_removed_layers, all_tensor_mappings)
+        final_layer_count = len(self.ir.layers)
+        total_removed = initial_layer_count - final_layer_count
+
+        logger.info(
+            f"Optimization complete: {initial_layer_count} -> {final_layer_count} layers "
+            f"({total_removed} removed)"
+        )
+
+        return self.ir
 
     def _rebuild_ir(self, removed_layers: set, tensor_mapping: dict) -> NetworkIR:
         """Rebuild IR with removed layers and rewired tensors."""
         if not removed_layers:
-            logger.info("No layers removed, returning original IR")
             return self.ir
-
-        logger.info(f"Removing {len(removed_layers)} layers from IR...")
 
         # 1. Remove layers
         new_layers = {
@@ -119,11 +117,6 @@ class IROptimizer:
 
         new_execution_order = topological_sort(
             new_layers, new_tensor_producers, self.ir.input_tensors
-        )
-
-        logger.info(
-            f"Optimized IR: {len(self.ir.layers)} -> {len(new_layers)} layers "
-            f"({len(removed_layers)} removed)"
         )
 
         return NetworkIR(
