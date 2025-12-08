@@ -40,13 +40,12 @@ class FuseLinearActivationPass(OptimizationPass):
 
                 if chain:
                     matmul, add_layer, activation = chain
-                    bias = add_layer.bias if hasattr(add_layer, "bias") else None
+                    fused_layer = self._create_fused_layer(
+                        matmul, add_layer, activation, 
+                    )
 
-                    if bias is not None:
-                        fused_layer = self._create_fused_layer(
-                            matmul, add_layer, activation, bias
-                        )
-
+                    # only fuse if there is a bias to include
+                    if fused_layer.bias is not None:
                         # Replace matmul with fused layer (keeps same name/slot)
                         self.replace_layer(matmul, fused_layer, network)
 
@@ -105,8 +104,9 @@ class FuseLinearActivationPass(OptimizationPass):
         matmul: MatMulLayer,
         add_layer: AddLayer,
         activation: ActivationLayer,
-        bias,
     ) -> FusedLinearLayer:
+        bias = add_layer.bias if hasattr(add_layer, "bias") else None
+        
         """Create a fused linear layer from the chain components."""
         return FusedLinearLayer(
             name=f"{matmul.name}/Fused",

@@ -7,6 +7,7 @@ from .remove_noop_reshape import RemoveNoOpReshapePass
 from .remove_redundant_quant_pairs import RemoveRedundantQuantPairPass
 from .remove_weight_dequant import RemoveWeightDequantPass
 from .fuse_linear_activation import FuseLinearActivationPass
+from .buffer_allocation import BufferAllocationPass
 
 __all__ = [
     "RemoveIdentityPass",
@@ -14,4 +15,5 @@ __all__ = [
     "RemoveRedundantQuantPairPass",
     "RemoveWeightDequantPass",
     "FuseLinearActivationPass",
+    "BufferAllocationPass",
 ]

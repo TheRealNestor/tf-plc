@@ -15,6 +15,7 @@ from .passes import (
     RemoveRedundantQuantPairPass,
     RemoveWeightDequantPass,
     FuseLinearActivationPass,
+    BufferAllocationPass,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ DEFAULT_PASSES: List[OptimizationPass] = [
     RemoveNoOpReshapePass(),
     RemoveRedundantQuantPairPass(),
     FuseLinearActivationPass(),
+    BufferAllocationPass(),
 ]
 
 
@@ -98,7 +100,6 @@ class IROptimizer:
             if new_inputs != list(layer.inputs):
                 object.__setattr__(layer, "inputs", tuple(new_inputs))
 
-
     def _remap_network_outputs(self, tensor_mapping: dict) -> list:
         """Remap network output tensors and log changes."""
         new_outputs = []
@@ -130,7 +131,15 @@ class IROptimizer:
 
         return tensor_producers, dict(tensor_consumers)
 
-
+    def _renumber_layer_ids(self, layers: dict, execution_order: list) -> dict:
+        """Renumber layer IDs to be sequential based on execution order."""
+        new_layers = {}
+        for new_id, layer_name in enumerate(execution_order):
+            layer = layers[layer_name]
+            # Update layer_id using frozen dataclass workaround
+            object.__setattr__(layer, "layer_id", new_id)
+            new_layers[layer_name] = layer
+        return new_layers
 
     def _rebuild_ir(self, removed_layers: set, tensor_mapping: dict) -> NetworkIR:
         """Rebuild IR with removed layers and rewired tensors.
@@ -141,7 +150,7 @@ class IROptimizer:
         Returns:
             Rebuilt NetworkIR with layers removed and tensors rewired.
         """
-        
+
         if not removed_layers:
             return self.ir
 
@@ -161,6 +170,9 @@ class IROptimizer:
         new_execution_order = topological_sort(
             new_layers, new_tensor_producers, self.ir.input_tensors
         )
+
+        # 6. Renumber layer IDs sequentially
+        new_layers = self._renumber_layer_ids(new_layers, new_execution_order)
 
         return NetworkIR(
             layers=new_layers,
