@@ -16,11 +16,13 @@ from .passes import (
     RemoveWeightDequantPass,
     FuseLinearActivationPass,
     BufferAllocationPass,
+    RemoveDropoutPass,
 )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PASSES: List[OptimizationPass] = [
+    RemoveDropoutPass(),
     RemoveIdentityPass(),
     RemoveWeightDequantPass(),
     RemoveNoOpReshapePass(),

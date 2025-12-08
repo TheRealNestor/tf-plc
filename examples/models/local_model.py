@@ -24,12 +24,10 @@ class TemperaturePredictionModel:
         self.model = tf.keras.Sequential([
             tf.keras.layers.Flatten(input_shape=(
                 self.sequence_length, 1)),  # Flatten the window
-            # First hidden layer with 16 neurons
             tf.keras.layers.Dense(16, activation='relu'),
-            tf.keras.layers.Dropout(0.2),  # Add dropout for regularization
-            # Second hidden layer with 12 neurons
+            tf.keras.layers.Dropout(0.2),
             tf.keras.layers.Dense(12, activation='relu'),
-            tf.keras.layers.Dropout(0.2),  # Add dropout for regularization
+            tf.keras.layers.Dropout(0.2),
             # 3 classes: cold, normal, hot
             tf.keras.layers.Dense(3, activation='softmax')
         ])

@@ -24,7 +24,11 @@ def extract_activation_layer(
     """Extract activation layer."""
     inputs = layer["resolved_inputs"]
     outputs = layer["resolved_outputs"]
-    activation_type = layer["op_type"].upper() if layer["op_type"].upper() in ActivationType.__members__ else "NONE"
+    activation_type = (
+        layer["op_type"].upper()
+        if layer["op_type"].upper() in ActivationType.__members__
+        else "NONE"
+    )
 
     return ActivationLayer(
         layer_id=layer_id,
@@ -300,6 +304,37 @@ def extract_dequantize_linear_layer(
     )
 
 
+def extract_dropout_layer(
+    layer: Dict, layer_id: int, analyzer: ONNXModel
+) -> DropoutLayer:
+    """
+    Extract Dropout layer.
+
+    Note: Dropout is only active during training. At inference time,
+    it acts as an identity/pass-through operation.
+    """
+    inputs = layer["resolved_inputs"]
+    outputs = layer["resolved_outputs"]
+    attrs = layer.get("attributes", {})
+
+    ratio = attrs.get("ratio", 0.5)
+
+    return DropoutLayer(
+        layer_id=layer_id,
+        name=layer["name"],
+        op_type=layer["op_type"],
+        input_size=inputs[0].size,
+        output_size=outputs[0].size,
+        inputs=tuple(t.name for t in inputs),
+        outputs=tuple(t.name for t in outputs),
+        input_shape=inputs[0].shape,
+        output_shape=outputs[0].shape,
+        input_type=inputs[0].dtype,
+        output_type=outputs[0].dtype,
+        ratio=ratio,
+    )
+
+
 # Registry of layer extractors
 LAYER_EXTRACTORS = {
     "MatMul": extract_matmul_layer,
@@ -313,4 +348,5 @@ LAYER_EXTRACTORS = {
     "Reshape": extract_reshape_layer,
     "QuantizeLinear": extract_quantize_linear_layer,
     "DequantizeLinear": extract_dequantize_linear_layer,
+    "Dropout": extract_dropout_layer,
 }

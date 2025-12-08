@@ -10,6 +10,7 @@ from .passes import (
     RemoveRedundantQuantPairPass,
     RemoveWeightDequantPass,
     BufferAllocationPass,
+    RemoveDropoutPass,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "RemoveRedundantQuantPairPass",
     "RemoveWeightDequantPass",
     "BufferAllocationPass",
+    "RemoveDropoutPass",
 ]

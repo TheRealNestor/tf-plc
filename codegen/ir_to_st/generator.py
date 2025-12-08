@@ -9,11 +9,13 @@ from .st_code import *
 from .type_conversion import *
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 # ===========================================================================
 # Utility Functions
 # ===========================================================================
+
 
 def is_uniform_array(arr: np.ndarray) -> bool:
     """
@@ -42,6 +44,7 @@ def get_layer_type_name(layer: LinearLayer, activation: ActivationType) -> str:
     else:
         return "MatMul"
 
+
 # Configuration: which activations to inline (vs separate loop)
 INLINE_ACTIVATIONS = {
     ActivationType.NONE,
@@ -49,6 +52,7 @@ INLINE_ACTIVATIONS = {
     # ActivationType.SIGMOID,
     # ActivationType.TANH,
 }
+
 
 def apply_activation_inline(activation: ActivationType, expr: str) -> str:
     """Apply activation inline if possible, otherwise return expression unchanged."""
@@ -61,9 +65,11 @@ def apply_activation_inline(activation: ActivationType, expr: str) -> str:
     else:  # NONE, SOFTMAX, ...
         return expr
 
+
 def needs_separate_activation(activation: ActivationType) -> bool:
     """Check if activation needs separate loop."""
     return activation not in INLINE_ACTIVATIONS
+
 
 def generate_weight_access(
     layer: LinearLayer, input_var: str, layer_id: int, output_size: int
@@ -646,6 +652,21 @@ def generate_dequantize_linear_code(
     return builder.build()
 
 
+# NOTE: Dropout code does not actually do anything during inference. Identity operation for now (modify if we need on-device training)
+def generate_dropout_code(
+    layer: DropoutLayer, input_var: str, output_var: str
+) -> STCode:
+    """
+    Generate Dropout layer code.
+
+    At inference time, Dropout is an identity operation.
+    """
+
+    builder = STCodeBuilder()
+    builder.add_line(f"(* Layer {layer.layer_id}: Dropout (identity at inference) *)")
+    return builder.build()
+
+
 # ============================================================================
 # Forward Pass Generation
 # ============================================================================
@@ -661,7 +682,9 @@ LAYER_CODE_GENERATORS = {
     ActivationLayer: generate_activation_layer_code,
     QuantizeLinearLayer: generate_quantize_linear_code,
     DequantizeLinearLayer: generate_dequantize_linear_code,
+    DropoutLayer: generate_dropout_code,
 }
+
 
 def generate_forward_pass(network: NetworkIR) -> STCode:
     """Generate the forward pass computation code for all layers."""
@@ -740,9 +763,7 @@ def generate_function_block(
     return code
 
 
-def translate_ir_to_st(
-    ir: NetworkIR, fb_name: str = "NeuralNetwork"
-) -> str:
+def translate_ir_to_st(ir: NetworkIR, fb_name: str = "NeuralNetwork") -> str:
     """Translate the given NetworkIR to Structured Text code."""
     builder = STCodeBuilder()
     builder += generate_function_block(ir, fb_name)

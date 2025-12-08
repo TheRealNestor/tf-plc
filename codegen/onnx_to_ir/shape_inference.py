@@ -41,6 +41,7 @@ def infer_matmul_output_shape(
         return (output_features,)
 
 
+# TODO: input shape is only needed for batch dim? consider removing this
 def infer_gemm_output_shape(
     input_shape: Tuple[int, ...], weight_shape: Tuple[int, ...], transB: bool = False
 ) -> Tuple[int, ...]:
@@ -51,8 +52,8 @@ def infer_gemm_output_shape(
           Y = alpha * A @ B + beta * C     (if transB=False)
 
     Args:
-        input_shape: Shape of input A
-        weight_shape: Shape of weight B
+        input_shape: Shape of input A (M, K)
+        weight_shape: Shape of weight B (K, N)
         transB: Whether B is transposed
     """
     if not weight_shape or len(weight_shape) < 2:
@@ -69,16 +70,6 @@ def infer_gemm_output_shape(
 
     # Gemm typically produces 1D output (batch dimension removed or kept as 1)
     return (output_features,)
-
-
-def infer_element_wise_output_shape(input_shape: Tuple[int, ...]) -> Tuple[int, ...]:
-    """
-    Infer output shape for element-wise operations (ReLU, Sigmoid, Tanh, etc.).
-
-    Element-wise operations preserve input shape.
-    """
-    return input_shape
-
 
 def infer_add_output_shape(
     input_shape: Tuple[int, ...], bias_shape: Tuple[int, ...]
@@ -136,33 +127,6 @@ def infer_reshape_output_shape(
     return target_shape
 
 
-def infer_softmax_output_shape(input_shape: Tuple[int, ...]) -> Tuple[int, ...]:
-    """
-    Infer output shape for Softmax operation.
-
-    Softmax preserves input shape.
-    """
-    return input_shape
-
-
-def infer_quantize_output_shape(input_shape: Tuple[int, ...]) -> Tuple[int, ...]:
-    """
-    Infer output shape for QuantizeLinear operation.
-
-    Quantization preserves shape, only changes dtype.
-    """
-    return input_shape
-
-
-def infer_dequantize_output_shape(input_shape: Tuple[int, ...]) -> Tuple[int, ...]:
-    """
-    Infer output shape for DequantizeLinear operation.
-
-    Dequantization preserves shape, only changes dtype.
-    """
-    return input_shape
-
-
 def infer_layer_shapes(
     layer_dict: Dict[str, Any],
 ) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
@@ -214,12 +178,14 @@ def infer_layer_shapes(
         attrs = layer_dict.get("attributes", {})
         transB = attrs.get("transB", 0) == 1
         output_shape = infer_gemm_output_shape(input_shape, weight_tensor.shape, transB)
+    elif op_type == "Dropout":
+        output_shape = input_shape
 
     elif op_type in ["Relu", "Sigmoid", "Tanh"]:
-        output_shape = infer_element_wise_output_shape(input_shape)
+        output_shape = input_shape
 
     elif op_type == "Softmax":
-        output_shape = infer_softmax_output_shape(input_shape)
+        output_shape = input_shape
 
     elif op_type == "Add":
         # Check if second input is bias
@@ -240,10 +206,10 @@ def infer_layer_shapes(
         output_shape = infer_reshape_output_shape(input_shape, target_shape)
 
     elif op_type == "QuantizeLinear":
-        output_shape = infer_quantize_output_shape(input_shape)
+        output_shape = input_shape
 
     elif op_type == "DequantizeLinear":
-        output_shape = infer_dequantize_output_shape(input_shape)
+        output_shape = input_shape
 
     else:
         logger.warning(f"No shape inference for op_type '{op_type}', using input shape")

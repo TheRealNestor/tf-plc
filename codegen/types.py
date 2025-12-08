@@ -44,10 +44,10 @@ class ActivationLayer(BaseLayer):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ConstFoldOptLayer(BaseLayer):
-    """Represents a constant folding optimization layer"""
+class DropoutLayer(BaseLayer):
+    """Represents a Dropout layer"""
 
-    folded_tensor: np.ndarray
+    ratio: float = 0.5
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -64,14 +64,16 @@ class LinearLayer(BaseLayer):
     def is_quantized(self) -> bool:
         """Check if this layer has quantized weights."""
         return self.weight_scale is not None
-    
+
     def is_per_tensor_quantized(self) -> bool:
         """Check if quantization is per-tensor (vs per-channel)."""
         return self.is_quantized() and self.weight_scale.size == 1
 
+
 @dataclass(frozen=True, kw_only=True)
 class MatMulLayer(LinearLayer):
     """Y = X * W"""
+
     pass
 
 
@@ -93,12 +95,14 @@ class FusedLinearLayer(LinearLayer):
     - Bias addition
     - Optional activation function
     """
+
     activation: ActivationType
 
 
 @dataclass(frozen=True, kw_only=True)
 class FusedGemmLayer(FusedLinearLayer):
     """Base class for Fused Gemm + Activation layers"""
+
     alpha: float = 1.0
     beta: float = 1.0
     transA: bool = False
@@ -108,6 +112,7 @@ class FusedGemmLayer(FusedLinearLayer):
 @dataclass(frozen=True, kw_only=True)
 class AddLayer(BaseLayer):
     """Represents an ONNX Add layer"""
+
     bias: np.ndarray
 
 
@@ -135,6 +140,7 @@ class DequantizeLinearLayer(BaseLayer):
     scale: np.ndarray
     zero_point: np.ndarray
     axis: Optional[int] = None
+
 
 @dataclass(frozen=True)
 class NetworkIR:
@@ -166,7 +172,7 @@ class NetworkIR:
             for tensor_name in self.get_layer(layer_name).inputs
             if tensor_name in self.tensor_producers
         ]
-    
+
     def get_output_layers(self, layer_name: str) -> List[str]:
         """Get names of layers that consume outputs from the given layer"""
         return [
@@ -175,15 +181,15 @@ class NetworkIR:
             if tensor_name in self.tensor_consumers
             for consumer in self.tensor_consumers[tensor_name]
         ]
-    
+
     def is_network_input(self, tensor_name: str) -> bool:
         """Check if a tensor is a network input"""
         return tensor_name in self.input_tensors
-    
+
     def is_network_output(self, tensor_name: str) -> bool:
         """Check if a tensor is a network output"""
         return tensor_name in self.output_tensors
-    
+
     def __str__(self) -> str:
         layer_types = [type(layer).__name__ for layer in self.layers.values()]
         layers_str = "\n  ".join(layer_types)
