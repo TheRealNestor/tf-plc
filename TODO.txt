@@ -1,8 +1,5 @@
 - Add Conv layers
-- Figure out a way to reuse variables in ST code to reduce memory footprint. I don't think there is a garbage collector or anything of the sort....
 - Figure out how to access the temperature sensor on the HW. 
-- Simpler way to use StratonPLC? 
 - Record real sensor readings, including time and conditions behind the data. 
-
 
 - Add memory check (emit warning or fail when exceeding static memory limits)
