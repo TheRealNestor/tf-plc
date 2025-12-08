@@ -1,5 +1,4 @@
 - Add Conv layers
-- Add dropout layers
 - Figure out a way to reuse variables in ST code to reduce memory footprint. I don't think there is a garbage collector or anything of the sort....
 - Figure out how to access the temperature sensor on the HW. 
 - Simpler way to use StratonPLC? 
