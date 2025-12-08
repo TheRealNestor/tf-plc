@@ -10,6 +10,7 @@ from pathlib import Path
 from codegen.onnx_model import ONNXModel
 from codegen.onnx_to_ir import onnx_to_ir
 from codegen.ir_optimizer import IROptimizer
+from codegen.memory_check.memory_analyzer import check_memory
 from codegen.ir_to_st import translate_ir_to_st
 
 logger = logging.getLogger(__name__)
@@ -50,13 +51,19 @@ def compile_onnx_to_st(
     else:
         logger.info("Step 3: Skipping optimization (optimize=False)")
 
-    # Step 4: Generate Structured Text code
-    logger.info("Step 4: Generating Structured Text code...")
+
+    # Step 4: Check memory consumption
+    logger.info("Step 4: Checking memory consumption...")
+    memory_report = check_memory(ir, memory_limit_kb=96, fail_on_exceed=False)
+    logger.info(f"  Memory utilization: {memory_report.utilization_percent:.1f}%")
+
+    # Step 5: Generate Structured Text code
+    logger.info("Step 5: Generating Structured Text code...")
     st_code = translate_ir_to_st(ir, fb_name="NeuralNetworkFB")
 
-    # Step 5: Save to file (optional)
+    # Step 6: Save to file (optional)
     if output_path:
-        logger.info(f"Step 5: Writing to {output_path}")
+        logger.info(f"Step 6: Writing to {output_path}")
         output_file = Path(output_path)
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, "w") as f:

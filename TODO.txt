@@ -3,3 +3,7 @@
 - Record real sensor readings, including time and conditions behind the data. 
 
 - Add memory check (emit warning or fail when exceeding static memory limits)
+
+
+- Refactor generator.py (modularize code, split into multiple files)
+
