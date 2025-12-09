@@ -45,19 +45,44 @@ def get_layer_type_name(layer: LinearLayer, activation: ActivationType) -> str:
         return "MatMul"
 
 
-def get_layer_input_vars(layer: BaseLayer, network: NetworkIR) -> List[str]:
+def get_layer_input_vars(
+    layer: BaseLayer,
+    network: NetworkIR,
+    buffer_allocations: Optional[Dict[str, str]] = None,
+) -> List[str]:
     """Get all input variable names for a layer."""
     input_vars = []
 
     for inp_tensor in layer.inputs:
         if network.is_network_input(inp_tensor):
             input_vars.append("input_data")
+        elif buffer_allocations and inp_tensor in buffer_allocations:
+            # Use allocated buffer name
+            input_vars.append(buffer_allocations[inp_tensor])
         elif inp_tensor in network.tensor_producers:
             producer_name = network.tensor_producers[inp_tensor]
             producer_layer = network.layers[producer_name]
             input_vars.append(f"layer_{producer_layer.layer_id}_output")
 
     return input_vars
+
+
+def get_layer_output_var(
+    layer: BaseLayer,
+    network: NetworkIR,
+    buffer_allocations: Optional[Dict[str, str]] = None,
+) -> str:
+    """Get output variable name for a layer."""
+
+    output_tensor = layer.outputs[0]  # Assuming single output for simplicity
+
+    if network.is_network_output(output_tensor):
+        return "output_data"
+
+    if buffer_allocations and output_tensor in buffer_allocations:
+        return buffer_allocations[output_tensor]
+
+    return f"layer_{layer.layer_id}_output"
 
 
 # Configuration: which activations to inline (vs separate loop)
@@ -361,33 +386,58 @@ def generate_constants_section(network: NetworkIR) -> STCode:
 # ============================================================================
 
 
-def generate_var_section(network: NetworkIR) -> STCode:
+def generate_var_section(
+    network: NetworkIR, buffer_allocations: Optional[Dict[str, str]] = None
+) -> STCode:
     """Generate VAR section with all internal variables."""
-    code = STCode.from_lines("VAR")
+    builder = STCodeBuilder()
+    builder.add_line("VAR")
 
-    # Layer output variables
-    for layer_name in network.execution_order:
-        layer = network.layers[layer_name]
+    if buffer_allocations:
+        buffer_info = {}  # buffer_name -> (size, dtype)
 
-        if any(network.is_network_output(out) for out in layer.outputs):
-            continue
+        for tensor_name, buffer_name in buffer_allocations.items():
+            producer_name = network.tensor_producers[tensor_name]
+            layer = network.layers[producer_name]
+            plc_type = plc_type_from_onnx_dtype(layer.output_type)
+            size = layer.output_size
 
-        plc_type = plc_type_from_onnx_dtype(layer.output_type)
+            # Track max size for each buffer
+            if buffer_name not in buffer_info:
+                buffer_info[buffer_name] = (size, plc_type)
+            else:
+                existing_size, _ = buffer_info[buffer_name]
+                buffer_info[buffer_name] = (max(existing_size, size), plc_type)
 
-        code += STCode.from_lines(
-            f"(* Layer {layer.layer_id} output variable *)",
-            f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size-1}] OF {plc_type};",
-        ).indent()
+        builder.add_line("    (* Buffer allocation variables *)")
 
-        code += STCode.blank_line()
+        with builder.indent():
+            for buffer_name, (size, dtype) in buffer_info.items():
+                builder.add_line(f"{buffer_name} : ARRAY[0..{size - 1}] OF {dtype};")
+        builder.add_line("")
+
+    else:
+        for layer_name in network.execution_order:
+            layer = network.layers[layer_name]
+
+            if any(network.is_network_output(out) for out in layer.outputs):
+                continue
+
+            plc_type = plc_type_from_onnx_dtype(layer.output_type)
+
+            with builder.indent():
+                builder.add_line(
+                    f"layer_{layer.layer_id}_output : ARRAY[0..{layer.output_size - 1}] OF {plc_type};"
+                )
+
+            builder.add_line("")
 
     # Temporary computation variables
-    code += STCode.from_lines(
-        "    (* Temporary computation variables *)",
-        "    i : DINT;",
-        "    j : DINT;",
-        "    sum : REAL;",
-    )
+    with builder.indent():
+        builder.add_line("(* Temporary computation variables *)")
+        builder.add_line("i : DINT;")
+        builder.add_line("j : DINT;")
+        builder.add_line("sum : REAL;")
 
     # Check if any layer uses softmax activation
     has_softmax = any(
@@ -397,14 +447,15 @@ def generate_var_section(network: NetworkIR) -> STCode:
     )
 
     if has_softmax:
-        code += STCode.from_lines(
-            "max_val : REAL;",
-            "exp_sum : REAL;",
-        ).indent()
+        with builder.indent():
+            builder.add_line("max_val : REAL;")
+            builder.add_line("exp_sum : REAL;")
 
-    code += STCode.blank_line()
-    code += STCode.from_lines("END_VAR", "")
-    return code
+    builder.add_line("")
+    builder.add_line("END_VAR")
+    builder.add_line("")
+
+    return builder.build()
 
 
 # ============================================================================
@@ -725,21 +776,16 @@ LAYER_CODE_GENERATORS = {
 }
 
 
-def generate_forward_pass(network: NetworkIR) -> STCode:
+def generate_forward_pass(
+    network: NetworkIR, buffer_allocations: Optional[Dict[str, str]] = None
+) -> STCode:
     """Generate the forward pass computation code for all layers."""
     code = STCode.empty()
     for layer_name in network.execution_order:
         layer = network.layers[layer_name]
 
-        # Get all input variables (handles multiple inputs properly)
-        input_vars = get_layer_input_vars(layer, network)
-
-        # Determine output variable name
-        output_tensor = layer.outputs[0]
-        if network.is_network_output(output_tensor):
-            output_var = "output_data"
-        else:
-            output_var = f"layer_{layer.layer_id}_output"
+        input_vars = get_layer_input_vars(layer, network, buffer_allocations)
+        output_var = get_layer_output_var(layer, network, buffer_allocations)
 
         # Generate code for this layer
         layer_type = type(layer)
@@ -761,7 +807,9 @@ def generate_forward_pass(network: NetworkIR) -> STCode:
 
 
 def generate_function_block(
-    network: NetworkIR, fb_name: str = "NeuralNetwork"
+    network: NetworkIR,
+    fb_name: str = "NeuralNetwork",
+    buffer_allocations: Optional[Dict[str, str]] = None,
 ) -> STCode:
     """Generate complete function block code."""
     logger.info(
@@ -772,17 +820,19 @@ def generate_function_block(
     code += generate_header(fb_name)
     code += generate_input_output_vars(network)
     code += generate_constants_section(network)
-    code += generate_var_section(network)
-    code += generate_forward_pass(network)
+    code += generate_var_section(network, buffer_allocations)
+    code += generate_forward_pass(network, buffer_allocations)
     code += generate_footer()
 
     logger.info(f"Generated {len(code.lines)} lines of ST code.")
     return code
 
 
-def translate_ir_to_st(ir: NetworkIR, fb_name: str = "NeuralNetwork") -> str:
+def translate_ir_to_st(
+    ir: NetworkIR, fb_name: str = "NeuralNetwork", buffer_allocations=None
+) -> str:
     """Translate the given NetworkIR to Structured Text code."""
     builder = STCodeBuilder()
-    builder += generate_function_block(ir, fb_name)
+    builder += generate_function_block(ir, fb_name, buffer_allocations)
     # TODO: might need to add openplc config / straton config generation later
     return str(builder.build())

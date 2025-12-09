@@ -2,7 +2,7 @@
 IR optimization module.
 """
 
-from .optimizer import IROptimizer, DEFAULT_PASSES
+from .optimizer import IROptimizer, DEFAULT_PASSES, OptimizationResult
 from .base_pass import OptimizationPass
 from .passes import (
     RemoveIdentityPass,
@@ -23,4 +23,5 @@ __all__ = [
     "RemoveWeightDequantPass",
     "BufferAllocationPass",
     "RemoveDropoutPass",
+    "OptimizationResult",
 ]

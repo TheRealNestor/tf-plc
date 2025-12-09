@@ -3,8 +3,9 @@ Main IR optimizer that orchestrates optimization passes.
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict
 from collections import defaultdict
+from dataclasses import dataclass
 
 from ..onnx_to_ir.converter import topological_sort
 from ..types import NetworkIR
@@ -28,8 +29,20 @@ DEFAULT_PASSES: List[OptimizationPass] = [
     RemoveNoOpReshapePass(),
     RemoveRedundantQuantPairPass(),
     FuseLinearActivationPass(),
-    # BufferAllocationPass(),
+    BufferAllocationPass(),  # Produces code generation hints, doesn't modify IR
 ]
+
+
+@dataclass
+class OptimizationResult:
+    """Result of IR optimization, including optional code generation hints."""
+
+    ir: NetworkIR
+    buffer_allocations: Optional[Dict[str, str]] = None  # tensor_name -> buffer_name
+
+    def has_buffer_allocations(self) -> bool:
+        """Check if buffer allocations are available."""
+        return self.buffer_allocations is not None
 
 
 class IROptimizer:
@@ -39,38 +52,46 @@ class IROptimizer:
         self.ir = ir
         self.passes = passes if passes is not None else DEFAULT_PASSES
 
-    def optimize(self) -> NetworkIR:
+    def optimize(self) -> OptimizationResult:
         """
         Apply optimization passes to the IR.
 
-        Rebuilds IR between passes so each pass sees a clean, updated graph.
-
         Returns:
-            Optimized NetworkIR
+            OptimizationResult containing optimized IR and optional code generation hints
         """
         initial_layer_count = len(self.ir.layers)
         logger.info(f"Starting optimization with {initial_layer_count} layers")
 
-        # Run each pass and rebuild IR between passes
+        buffer_allocations = None
+
         for pass_instance in self.passes:
             logger.info(f"Running pass: {pass_instance.get_name()}")
             pass_instance.optimize(self.ir)
 
-            # Rebuild IR after each pass if it removed layers
-            if pass_instance.removed_layers:
+            # Rebuild IR if pass modified the graph structure
+            if pass_instance.removed_layers or pass_instance.tensor_mapping:
                 self.ir = self._rebuild_ir(
                     pass_instance.removed_layers, pass_instance.tensor_mapping
                 )
 
-        final_layer_count = len(self.ir.layers)
-        total_removed = initial_layer_count - final_layer_count
+            # Extract code generation hints (doesn't modify IR)
+            if (
+                hasattr(pass_instance, "buffer_assignments")
+                and pass_instance.buffer_assignments
+            ):
+                buffer_allocations = {
+                    tensor: alloc.buffer_name
+                    for tensor, alloc in pass_instance.buffer_assignments.items()
+                }
+                logger.info(f"Extracted {len(buffer_allocations)} buffer allocations")
 
+        final_layer_count = len(self.ir.layers)
         logger.info(
             f"Optimization complete: {initial_layer_count} -> {final_layer_count} layers "
-            f"({total_removed} removed)"
+            f"({initial_layer_count - final_layer_count} removed)"
         )
 
-        return self.ir
+        return OptimizationResult(ir=self.ir, buffer_allocations=buffer_allocations)
 
     def _filter_removed_layers(self, removed_layers: set) -> dict:
         """Remove layers marked for deletion."""
@@ -91,19 +112,24 @@ class IROptimizer:
             source = tensor_mapping[source]
         return source
 
-    def _rewire_layer_inputs(self, layers: dict, tensor_mapping: dict) -> None:
-        """Update layer inputs to follow tensor remapping."""
+    def _rewire_layers(self, layers: dict, tensor_mapping: dict) -> None:
+        """Update layer inputs and outputs of individual layers, following tensor remapping."""
         for layer in layers.values():
             new_inputs = [
                 self._follow_tensor_mapping(inp, tensor_mapping) for inp in layer.inputs
             ]
-
-            # Only update if changed (frozen dataclass workaround)
             if new_inputs != list(layer.inputs):
                 object.__setattr__(layer, "inputs", tuple(new_inputs))
 
+            new_outputs = [
+                self._follow_tensor_mapping(out, tensor_mapping)
+                for out in layer.outputs
+            ]
+            if new_outputs != list(layer.outputs):
+                object.__setattr__(layer, "outputs", tuple(new_outputs))
+
     def _remap_network_outputs(self, tensor_mapping: dict) -> list:
-        """Remap network output tensors and log changes."""
+        """Remap network output tensors, i.e. updates the final network output tensor list."""
         new_outputs = []
 
         for out in self.ir.output_tensors:
@@ -153,14 +179,11 @@ class IROptimizer:
             Rebuilt NetworkIR with layers removed and tensors rewired.
         """
 
-        if not removed_layers:
-            return self.ir
-
         # 1. Remove layers
         new_layers = self._filter_removed_layers(removed_layers)
 
         # 2. Rewire tensor references in remaining layers
-        self._rewire_layer_inputs(new_layers, tensor_mapping)
+        self._rewire_layers(new_layers, tensor_mapping)
 
         # 3. Remap network outputs
         new_output_tensors = self._remap_network_outputs(tensor_mapping)

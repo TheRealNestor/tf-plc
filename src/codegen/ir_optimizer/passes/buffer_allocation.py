@@ -39,6 +39,9 @@ class BufferAllocationPass(OptimizationPass):
         """
         Allocate buffers using graph coloring.
 
+        This pass only produces code generation hints (buffer_assignments).
+        It does NOT modify the IR structure.
+
         Algorithm:
         1. Compute liveness intervals for each tensor
         2. Build interference graph (tensors that are live simultaneously)
@@ -47,20 +50,9 @@ class BufferAllocationPass(OptimizationPass):
         liveness = self._compute_liveness(ir)
         interference = self._build_interference_graph(liveness)
         self._color_graph(ir, interference)
-        self._apply_allocations_to_ir()
 
     def _compute_liveness(self, ir: NetworkIR) -> Dict[str, tuple]:
-        """
-        Compute (start, end) indices for each tensor's lifetime.
-
-        start = index where tensor is produced
-        end = index where tensor is last consumed
-
-        Args:
-            ir: NetworkIR to analyze
-        Returns:
-            Dict mapping tensor names to (start, end) indices
-        """
+        """Compute (start, end) indices for each tensor's lifetime."""
         liveness = {}
 
         for i, layer_name in enumerate(ir.execution_order):
@@ -81,12 +73,7 @@ class BufferAllocationPass(OptimizationPass):
     def _build_interference_graph(
         self, liveness: Dict[str, tuple]
     ) -> Dict[str, Set[str]]:
-        """Build graph of tensors that are live at the same time.
-        Args:
-            liveness: Dict mapping tensor names to (start, end) indices
-        Returns:
-            Dict mapping tensor names to sets of interfering tensor names
-        """
+        """Build graph of tensors that are live at the same time."""
         interference = {tensor: set() for tensor in liveness}
 
         tensors = list(liveness.keys())
@@ -107,13 +94,7 @@ class BufferAllocationPass(OptimizationPass):
         ir: NetworkIR,
         interference: Dict[str, Set[str]],
     ) -> None:
-        """Assign buffers using greedy graph coloring.
-        Args:
-            ir: NetworkIR being optimized
-            interference: Dict mapping tensor names to sets of interfering tensor names
-        Returns:
-            None
-        """
+        """Assign buffers using greedy graph coloring."""
 
         # Get tensor sizes
         tensor_sizes = {}
@@ -152,7 +133,7 @@ class BufferAllocationPass(OptimizationPass):
             size = tensor_sizes.get(tensor, 0)
             buffer_sizes[color] = max(buffer_sizes.get(color, 0), size)
 
-        # Create buffer allocations
+        # Create buffer allocations (metadata only - doesn't modify IR)
         for tensor, color in buffer_colors.items():
             self.buffer_assignments[tensor] = BufferAllocation(
                 buffer_name=f"buffer_{color}", size=buffer_sizes[color], dtype="REAL"
@@ -160,23 +141,4 @@ class BufferAllocationPass(OptimizationPass):
 
         logger.info(
             f"Buffer allocation: {len(buffer_colors)} tensors -> {len(buffer_sizes)} buffers"
-        )
-
-    def _apply_allocations_to_ir(self) -> None:
-        """
-        Populate tensor remappings to use the found shared buffers.
-
-        The actual IR modification happens later in optimizer._rebuild_ir(),
-        which reads self.tensor_mapping and applies the remappings.
-        """
-
-        for old_tensor, allocation in self.buffer_assignments.items():
-            buffer_name = allocation.buffer_name
-            self.remap_tensor(old_tensor, buffer_name)
-
-            logger.debug(f"Remapped tensor {old_tensor} to buffer {buffer_name}")
-
-        logger.info(
-            f"Remapped {len(self.buffer_assignments)} tensors to "
-            f"{len(set(allocation.buffer_name for allocation in self.buffer_assignments.values()))} buffers"
         )

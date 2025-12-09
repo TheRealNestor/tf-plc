@@ -38,44 +38,10 @@ VAR CONSTANT
 END_VAR
 
 VAR
-    (* Layer 0 output variable *)
-    layer_0_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 1 output variable *)
-    layer_1_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 2 output variable *)
-    layer_2_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 3 output variable *)
-    layer_3_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 4 output variable *)
-    layer_4_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 5 output variable *)
-    layer_5_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 6 output variable *)
-    layer_6_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 7 output variable *)
-    layer_7_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 8 output variable *)
-    layer_8_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 9 output variable *)
-    layer_9_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 10 output variable *)
-    layer_10_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 11 output variable *)
-    layer_11_output : ARRAY[0..31] OF REAL;
-
-    (* Layer 12 output variable *)
-    layer_12_output : ARRAY[0..15] OF REAL;
+    (* Buffer allocation variables *)
+    buffer_0 : ARRAY[0..31] OF REAL;
+    buffer_1 : ARRAY[0..31] OF REAL;
+    buffer_2 : ARRAY[0..31] OF REAL;
 
     (* Temporary computation variables *)
     i : DINT;
@@ -92,98 +58,98 @@ FOR j := 0 TO 31 DO
     FOR i := 0 TO 4 DO
         sum := sum + input_data[i] * weights_0[i * 32 + j];
     END_FOR;
-    layer_0_output[j] := MAX(sum + bias_0[j], 0.0);
+    buffer_1[j] := MAX(sum + bias_0[j], 0.0);
 END_FOR;
 
 (* Layer 1: Fused Linear + RELU *)
 FOR j := 0 TO 31 DO
     sum := 0.0;
     FOR i := 0 TO 31 DO
-        sum := sum + layer_0_output[i] * weights_1[i * 32 + j];
+        sum := sum + buffer_1[i] * weights_1[i * 32 + j];
     END_FOR;
-    layer_1_output[j] := MAX(sum + bias_1[j], 0.0);
+    buffer_0[j] := MAX(sum + bias_1[j], 0.0);
 END_FOR;
 
 (* Layer 2: Fused Linear + RELU *)
 FOR j := 0 TO 31 DO
     sum := 0.0;
     FOR i := 0 TO 31 DO
-        sum := sum + layer_1_output[i] * weights_2[i * 32 + j];
+        sum := sum + buffer_0[i] * weights_2[i * 32 + j];
     END_FOR;
-    layer_2_output[j] := MAX(sum + bias_2[j], 0.0);
+    buffer_2[j] := MAX(sum + bias_2[j], 0.0);
 END_FOR;
 
 (* Layer 3: MatMul *)
 FOR j := 0 TO 31 DO
     sum := 0.0;
     FOR i := 0 TO 31 DO
-        sum := sum + layer_2_output[i] * weights_3[i * 32 + j];
+        sum := sum + buffer_2[i] * weights_3[i * 32 + j];
     END_FOR;
-    layer_3_output[j] := sum;
+    buffer_1[j] := sum;
 END_FOR;
 
 (* Layer 4: Add (Bias) *)
 FOR i := 0 TO 31 DO
-    layer_4_output[i] := layer_3_output[i] + bias_4[i];
+    buffer_2[i] := buffer_1[i] + bias_4[i];
 END_FOR;
 
 (* Layer 5: Add (Element-wise) *)
 FOR i := 0 TO 31 DO
-    layer_5_output[i] := layer_4_output[i] + layer_1_output[i];
+    buffer_1[i] := buffer_2[i] + buffer_0[i];
 END_FOR;
 
 (* Layer 6: Activation (RELU) *)
 FOR i := 0 TO 31 DO
-    layer_6_output[i] := MAX(layer_5_output[i], 0.0);
+    buffer_0[i] := MAX(buffer_1[i], 0.0);
 END_FOR;
 
 (* Layer 7: Fused Linear + RELU *)
 FOR j := 0 TO 31 DO
     sum := 0.0;
     FOR i := 0 TO 31 DO
-        sum := sum + layer_6_output[i] * weights_7[i * 32 + j];
+        sum := sum + buffer_0[i] * weights_7[i * 32 + j];
     END_FOR;
-    layer_7_output[j] := MAX(sum + bias_7[j], 0.0);
+    buffer_2[j] := MAX(sum + bias_7[j], 0.0);
 END_FOR;
 
 (* Layer 8: MatMul *)
 FOR j := 0 TO 31 DO
     sum := 0.0;
     FOR i := 0 TO 31 DO
-        sum := sum + layer_7_output[i] * weights_8[i * 32 + j];
+        sum := sum + buffer_2[i] * weights_8[i * 32 + j];
     END_FOR;
-    layer_8_output[j] := sum;
+    buffer_1[j] := sum;
 END_FOR;
 
 (* Layer 9: Add (Bias) *)
 FOR i := 0 TO 31 DO
-    layer_9_output[i] := layer_8_output[i] + bias_9[i];
+    buffer_2[i] := buffer_1[i] + bias_9[i];
 END_FOR;
 
 (* Layer 10: Add (Element-wise) *)
 FOR i := 0 TO 31 DO
-    layer_10_output[i] := layer_9_output[i] + layer_6_output[i];
+    buffer_1[i] := buffer_2[i] + buffer_0[i];
 END_FOR;
 
 (* Layer 11: Activation (RELU) *)
 FOR i := 0 TO 31 DO
-    layer_11_output[i] := MAX(layer_10_output[i], 0.0);
+    buffer_0[i] := MAX(buffer_1[i], 0.0);
 END_FOR;
 
 (* Layer 12: Fused Linear + RELU *)
 FOR j := 0 TO 15 DO
     sum := 0.0;
     FOR i := 0 TO 31 DO
-        sum := sum + layer_11_output[i] * weights_12[i * 16 + j];
+        sum := sum + buffer_0[i] * weights_12[i * 16 + j];
     END_FOR;
-    layer_12_output[j] := MAX(sum + bias_12[j], 0.0);
+    buffer_1[j] := MAX(sum + bias_12[j], 0.0);
 END_FOR;
 
 (* Layer 13: Fused Linear + SOFTMAX *)
 FOR j := 0 TO 2 DO
     sum := 0.0;
     FOR i := 0 TO 15 DO
-        sum := sum + layer_12_output[i] * weights_13[i * 3 + j];
+        sum := sum + buffer_1[i] * weights_13[i * 3 + j];
     END_FOR;
     output_data[j] := sum + bias_13[j];
 END_FOR;

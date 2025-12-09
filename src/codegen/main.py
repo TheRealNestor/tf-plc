@@ -9,7 +9,7 @@ from pathlib import Path
 
 from codegen.onnx_model import ONNXModel
 from codegen.onnx_to_ir import onnx_to_ir
-from codegen.ir_optimizer import IROptimizer
+from codegen.ir_optimizer import IROptimizer, OptimizationResult
 from codegen.memory_check.memory_analyzer import check_memory
 from codegen.ir_to_st import translate_ir_to_st
 
@@ -43,14 +43,18 @@ def compile_onnx_to_st(
     logger.info(f"  Created IR with {len(ir.layers)} layers")
 
     # Step 3: Optimize IR (optional)
+    buffer_allocations = None
     if optimize:
         logger.info("Step 3: Optimizing IR...")
         optimizer = IROptimizer(ir)
-        ir = optimizer.optimize()  # Uses DEFAULT_PASSES
-        logger.info(f"  Optimized to {len(ir.layers)} layers")
+        result: OptimizationResult = optimizer.optimize()
+        ir = result.ir
+        buffer_allocations = result.buffer_allocations
+
+        logger.info(f"  Optimized IR has {len(ir.layers)} layers")
+
     else:
         logger.info("Step 3: Skipping optimization (optimize=False)")
-
 
     # Step 4: Check memory consumption
     logger.info("Step 4: Checking memory consumption...")
@@ -59,7 +63,9 @@ def compile_onnx_to_st(
 
     # Step 5: Generate Structured Text code
     logger.info("Step 5: Generating Structured Text code...")
-    st_code = translate_ir_to_st(ir, fb_name="NeuralNetworkFB")
+    st_code = translate_ir_to_st(
+        ir, fb_name="NeuralNetworkFB", buffer_allocations=buffer_allocations
+    )
 
     # Step 6: Save to file (optional)
     if output_path:
