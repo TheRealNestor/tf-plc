@@ -16,28 +16,6 @@ from .layer_extractors import LAYER_EXTRACTORS
 logger = logging.getLogger(__name__)
 
 
-def _resolve_skipped_tensors(layers: Dict[str, BaseLayer], mapping: Dict[str, str]):
-    """
-    Update layer inputs to bypass skipped layers.
-
-    If a layer's input is produced by a skipped layer, replace it with
-    the skipped layer's input (the actual source tensor).
-    """
-    for layer in layers.values():
-        updated_inputs = []
-        for inp in layer.inputs:
-            # Follow the mapping chain to find the real source
-            source = inp
-            while source in mapping:
-                source = mapping[source]
-            updated_inputs.append(source)
-
-        # Update the layer's inputs (this modifies the frozen dataclass)
-        if updated_inputs != list(layer.inputs):
-            object.__setattr__(layer, "inputs", tuple(updated_inputs))
-            logger.debug(f"Updated inputs for {layer.name}: {layer.inputs}")
-
-
 def topological_sort(
     layers: Dict[str, BaseLayer],
     tensor_producers: Dict[str, str],

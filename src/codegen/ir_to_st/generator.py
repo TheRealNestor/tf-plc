@@ -643,22 +643,8 @@ def generate_quantize_linear_code(
 
     # Get bounds and cast function from output type
     output_plc_type = plc_type_from_onnx_dtype(layer.output_type)
-
-    if layer.output_type == "TensorProto.INT8":
-        min_val, max_val = -128, 127
-        cast_func = "REAL_TO_SINT"
-    elif layer.output_type == "TensorProto.UINT8":
-        min_val, max_val = 0, 255
-        cast_func = "REAL_TO_USINT"
-    elif layer.output_type == "TensorProto.INT16":
-        min_val, max_val = -32768, 32767
-        cast_func = "REAL_TO_INT"
-    elif layer.output_type == "TensorProto.UINT16":
-        min_val, max_val = 0, 65535
-        cast_func = "REAL_TO_UINT"
-    else:
-        min_val, max_val = -2147483648, 2147483647
-        cast_func = "REAL_TO_DINT"
+    min_val, max_val = get_type_limits_from_str(layer.output_type)
+    cast_func = get_conversion_func("REAL", output_plc_type)
 
     is_per_tensor = layer.scale.size == 1
 
@@ -697,17 +683,8 @@ def generate_dequantize_linear_code(
 
     builder.add_line(f"(* Layer {layer.layer_id}: {layer.name} - DequantizeLinear *)")
 
-    # Get cast function from input type
-    if layer.input_type == "TensorProto.INT8":
-        cast_func = "SINT_TO_REAL"
-    elif layer.input_type == "TensorProto.UINT8":
-        cast_func = "USINT_TO_REAL"
-    elif layer.input_type == "TensorProto.INT16":
-        cast_func = "INT_TO_REAL"
-    elif layer.input_type == "TensorProto.UINT16":
-        cast_func = "UINT_TO_REAL"
-    else:
-        cast_func = "DINT_TO_REAL"
+    input_plc_type = plc_type_from_onnx_dtype(layer.input_type)
+    cast_func = get_conversion_func(input_plc_type, "REAL")
 
     is_per_tensor = layer.scale.size == 1
 

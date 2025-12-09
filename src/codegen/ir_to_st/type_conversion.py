@@ -3,8 +3,49 @@ PLC type system utilities.
 """
 
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Dict, Optional
+from dataclasses import dataclass
 
+
+@dataclass
+class PLCTypeInfo:
+    """Information about a PLC type."""
+
+    plc_name: str
+    numpy_dtype: Optional[np.dtype]
+    onnx_name: str
+    size_bytes: int
+    is_float: bool = False
+
+    @property
+    def limits(self) -> Tuple[int, int]:
+        """Get min/max values for this type."""
+        if self.is_float or self.numpy_dtype is None:
+            return (0, 0)
+        info = np.iinfo(self.numpy_dtype)
+        return (info.min, info.max)
+
+
+# Unified type registry
+PLC_TYPES: Dict[str, PLCTypeInfo] = {
+    "SINT": PLCTypeInfo("SINT", np.int8, "TensorProto.INT8", 1),
+    "USINT": PLCTypeInfo("USINT", np.uint8, "TensorProto.UINT8", 1),
+    "INT": PLCTypeInfo("INT", np.int16, "TensorProto.INT16", 2),
+    "UINT": PLCTypeInfo("UINT", np.uint16, "TensorProto.UINT16", 2),
+    "DINT": PLCTypeInfo("DINT", np.int32, "TensorProto.INT32", 4),
+    "UDINT": PLCTypeInfo("UDINT", np.uint32, "TensorProto.UINT32", 4),
+    "LINT": PLCTypeInfo("LINT", np.int64, "TensorProto.INT64", 8),
+    "REAL": PLCTypeInfo("REAL", np.float32, "TensorProto.FLOAT", 4, is_float=True),
+    "LREAL": PLCTypeInfo("LREAL", np.float64, "TensorProto.DOUBLE", 8, is_float=True),
+}
+
+# Create reverse lookup dictionaries
+_ONNX_TO_PLC = {info.onnx_name.lower(): name for name, info in PLC_TYPES.items()}
+_NUMPY_TO_PLC = {
+    info.numpy_dtype: name
+    for name, info in PLC_TYPES.items()
+    if info.numpy_dtype is not None
+}
 
 
 def plc_type_from_onnx_dtype(dtype: str) -> str:
@@ -12,65 +53,42 @@ def plc_type_from_onnx_dtype(dtype: str) -> str:
     if dtype is None:
         raise ValueError("IR layer data type is None; tensor_info is incomplete.")
 
-    match dtype:
-        case "TensorProto.FLOAT":
-            return "REAL"
-        case "TensorProto.DOUBLE":
-            return "LREAL"
-        case "TensorProto.INT32":
-            return "DINT"
-        case "TensorProto.INT64":
-            return "LINT"
-        case "TensorProto.INT8":
-            return "SINT"
-        case "TensorProto.UINT8":
-            return "USINT"
-        case "TensorProto.INT16":
-            return "INT"
-        case "TensorProto.UINT16":
-            return "UINT"
-        case _:
-            raise NotImplementedError(f"Data type {dtype} is not supported.")
+    dtype_lower = dtype.lower()
+    if dtype_lower in _ONNX_TO_PLC:
+        return _ONNX_TO_PLC[dtype_lower]
+
+    raise NotImplementedError(f"Data type {dtype} is not supported.")
 
 
 def numpy_to_plc_type(dtype: np.dtype) -> str:
     """Convert numpy dtype to IEC 61131-3 type."""
-    type_map = {
-        np.int8: "SINT",
-        np.uint8: "USINT",
-        np.int16: "INT",
-        np.uint16: "UINT",
-        np.int32: "DINT",
-        np.uint32: "UDINT",
-        np.int64: "LINT",
-        np.float32: "REAL",
-        np.float64: "LREAL",
-    }
-
-    if dtype.type not in type_map:
+    if dtype.type not in _NUMPY_TO_PLC:
         raise NotImplementedError(f"Numpy dtype {dtype} is not supported.")
-    
-    return type_map[dtype.type]
+
+    return _NUMPY_TO_PLC[dtype.type]
+
+
+def get_type_size_bytes(dtype_str: str) -> int:
+    """Get size in bytes for a dtype string (ONNX or PLC format)."""
+    # Try direct PLC name lookup
+    if dtype_str in PLC_TYPES:
+        return PLC_TYPES[dtype_str].size_bytes
+
+    # Try ONNX format
+    dtype_lower = dtype_str.lower()
+    if dtype_lower in _ONNX_TO_PLC:
+        plc_name = _ONNX_TO_PLC[dtype_lower]
+        return PLC_TYPES[plc_name].size_bytes
+
+    # Default fallback
+    return 4  # REAL
+
 
 def numpy_to_plc_cast_func(np_dtype: np.dtype, target_plc_type: str) -> str:
     """Get PLC cast function from numpy dtype to target type."""
-    if target_plc_type == "REAL":
-        if np_dtype == np.int8:
-            return "SINT_TO_REAL"
-        elif np_dtype == np.uint8:
-            return "USINT_TO_REAL"
-        elif np_dtype == np.int16:
-            return "INT_TO_REAL"
-        elif np_dtype == np.uint16:
-            return "UINT_TO_REAL"
-        elif np_dtype == np.int32:
-            return "DINT_TO_REAL"
-        elif np_dtype == np.uint32:
-            return "UDINT_TO_REAL"
-        else:
-            raise ValueError(f"Unsupported conversion from {np_dtype} to {target_plc_type}")
-    else:
-        raise ValueError(f"Unsupported target type: {target_plc_type}")
+    source_type = numpy_to_plc_type(np_dtype)
+    return get_conversion_func(source_type, target_plc_type)
+
 
 def get_accumulator_type(dtype: np.dtype) -> str:
     """Get appropriate accumulator type for quantized operations."""
@@ -84,10 +102,15 @@ def get_accumulator_type(dtype: np.dtype) -> str:
 
 def get_type_limits(dtype: np.dtype) -> Tuple[int, int]:
     """Get min/max values for a dtype."""
-    info = np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else None
-    if info:
-        return (info.min, info.max)
-    return (0, 0)  # For floats
+    plc_type = numpy_to_plc_type(dtype)
+    return PLC_TYPES[plc_type].limits
+
+
+def get_type_limits_from_str(plc_type: str) -> Tuple[int, int]:
+    """Get min/max values for a PLC type string."""
+    if plc_type not in PLC_TYPES:
+        raise ValueError(f"Unknown PLC type: {plc_type}")
+    return PLC_TYPES[plc_type].limits
 
 
 def get_conversion_func(from_type: str, to_type: str) -> str:

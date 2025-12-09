@@ -21,11 +21,9 @@ VAR CONSTANT
 END_VAR
 
 VAR
-    (* Layer 0 output variable *)
-    layer_0_output : ARRAY[0..15] OF REAL;
-
-    (* Layer 1 output variable *)
-    layer_1_output : ARRAY[0..11] OF REAL;
+    (* Buffer allocation variables *)
+    buffer_0 : ARRAY[0..11] OF REAL;
+    buffer_1 : ARRAY[0..15] OF REAL;
 
     (* Temporary computation variables *)
     i : DINT;
@@ -42,23 +40,23 @@ FOR j := 0 TO 15 DO
     FOR i := 0 TO 4 DO
         sum := sum + input_data[i] * weights_0[i * 16 + j];
     END_FOR;
-    layer_0_output[j] := MAX(sum + bias_0[j], 0.0);
+    buffer_1[j] := MAX(sum + bias_0[j], 0.0);
 END_FOR;
 
 (* Layer 1: Fused Linear + RELU *)
 FOR j := 0 TO 11 DO
     sum := 0.0;
     FOR i := 0 TO 15 DO
-        sum := sum + layer_0_output[i] * weights_1[i * 12 + j];
+        sum := sum + buffer_1[i] * weights_1[i * 12 + j];
     END_FOR;
-    layer_1_output[j] := MAX(sum + bias_1[j], 0.0);
+    buffer_0[j] := MAX(sum + bias_1[j], 0.0);
 END_FOR;
 
 (* Layer 2: Fused Linear + SOFTMAX *)
 FOR j := 0 TO 2 DO
     sum := 0.0;
     FOR i := 0 TO 11 DO
-        sum := sum + layer_1_output[i] * weights_2[i * 3 + j];
+        sum := sum + buffer_0[i] * weights_2[i * 3 + j];
     END_FOR;
     output_data[j] := sum + bias_2[j];
 END_FOR;

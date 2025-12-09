@@ -27,11 +27,9 @@ VAR CONSTANT
 END_VAR
 
 VAR
-    (* Layer 0 output variable *)
-    layer_0_output : ARRAY[0..9] OF REAL;
-
-    (* Layer 1 output variable *)
-    layer_1_output : ARRAY[0..9] OF REAL;
+    (* Buffer allocation variables *)
+    buffer_0 : ARRAY[0..9] OF REAL;
+    buffer_1 : ARRAY[0..9] OF REAL;
 
     (* Temporary computation variables *)
     i : DINT;
@@ -48,23 +46,23 @@ FOR j := 0 TO 9 DO
     FOR i := 0 TO 4 DO
         sum := sum + input_data[i] * (weight_scale_0[j] * SINT_TO_REAL(weights_0[i * 10 + j] - weight_zero_point_0));
     END_FOR;
-    layer_0_output[j] := MAX(sum + bias_0[j], 0.0);
+    buffer_1[j] := MAX(sum + bias_0[j], 0.0);
 END_FOR;
 
 (* Layer 1: Fused Linear + RELU *)
 FOR j := 0 TO 9 DO
     sum := 0.0;
     FOR i := 0 TO 9 DO
-        sum := sum + layer_0_output[i] * (weight_scale_1[j] * SINT_TO_REAL(weights_1[i * 10 + j] - weight_zero_point_1));
+        sum := sum + buffer_1[i] * (weight_scale_1[j] * SINT_TO_REAL(weights_1[i * 10 + j] - weight_zero_point_1));
     END_FOR;
-    layer_1_output[j] := MAX(sum + bias_1[j], 0.0);
+    buffer_0[j] := MAX(sum + bias_1[j], 0.0);
 END_FOR;
 
 (* Layer 2: Fused Linear + SOFTMAX *)
 FOR j := 0 TO 2 DO
     sum := 0.0;
     FOR i := 0 TO 9 DO
-        sum := sum + layer_1_output[i] * (weight_scale_2[j] * SINT_TO_REAL(weights_2[i * 3 + j] - weight_zero_point_2));
+        sum := sum + buffer_0[i] * (weight_scale_2[j] * SINT_TO_REAL(weights_2[i * 3 + j] - weight_zero_point_2));
     END_FOR;
     output_data[j] := sum + bias_2[j];
 END_FOR;

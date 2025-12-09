@@ -6,6 +6,7 @@ Computes memory requirements and validates against device limits.
 import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+from ..ir_to_st.type_conversion import get_type_size_bytes
 
 from ..types import (
     NetworkIR,
@@ -21,7 +22,6 @@ from ..types import (
 
 logger = logging.getLogger(__name__)
 
-
 # Map dtype strings to sizes in bytes
 DTYPE_SIZES: Dict[str, int] = {
     "float32": 4,
@@ -34,6 +34,8 @@ DTYPE_SIZES: Dict[str, int] = {
 }
 
 DEFAULT_ELEMENT_SIZE = 4  # REAL (float32)
+
+# TODO: Make elegant and unified way of handling dtype sizes for the different formats
 
 
 @dataclass
@@ -100,18 +102,7 @@ def _get_element_size(dtype: Optional[str]) -> int:
     if not dtype:
         return DEFAULT_ELEMENT_SIZE
 
-    dtype_lower = dtype.lower()
-
-    if dtype_lower in DTYPE_SIZES:
-        return DTYPE_SIZES[dtype_lower]
-
-    # Partial match (e.g., "numpy.float32" -> "float32")
-    for known_dtype, size in DTYPE_SIZES.items():
-        if known_dtype in dtype_lower:
-            return size
-
-    logger.warning(f"Unknown dtype '{dtype}', using default size {DEFAULT_ELEMENT_SIZE}")
-    return DEFAULT_ELEMENT_SIZE
+    return get_type_size_bytes(dtype)
 
 
 def _compute_layer_weights(layer: BaseLayer) -> Tuple[int, int]:
@@ -136,7 +127,7 @@ def _compute_layer_weights(layer: BaseLayer) -> Tuple[int, int]:
         # Determine if layer has bias
         # Check multiple ways since different layer types store this differently
         has_bias = False
-        
+
         # Method 1: Explicit has_bias attribute
         if hasattr(layer, "has_bias"):
             has_bias = layer.has_bias
@@ -157,7 +148,7 @@ def _compute_layer_weights(layer: BaseLayer) -> Tuple[int, int]:
 
         if has_bias:
             biases_bytes = layer.output_size * bias_element_size
-            
+
         logger.debug(
             f"Layer {layer.name}: weights={weight_elements} ({weights_bytes}B), "
             f"has_bias={has_bias}, bias_size={biases_bytes}B"
@@ -199,7 +190,7 @@ def _compute_constants_size(layer: BaseLayer) -> int:
 def _estimate_activation_memory(ir: NetworkIR) -> int:
     """
     Estimate activation memory needed.
-    
+
     Uses double-buffering estimate: max input size + max output size.
     This is conservative - actual usage may be lower with buffer reuse.
     """
@@ -214,7 +205,9 @@ def _estimate_activation_memory(ir: NetworkIR) -> int:
     return max_input_bytes + max_output_bytes
 
 
-def analyze_memory(ir: NetworkIR, memory_limit_bytes: int = 96 * 1024) -> MemoryCheckResult:
+def analyze_memory(
+    ir: NetworkIR, memory_limit_bytes: int = 96 * 1024
+) -> MemoryCheckResult:
     """
     Analyze memory requirements for the network IR.
 
@@ -303,9 +296,7 @@ def get_layer_memory_report(ir: NetworkIR) -> str:
             )
 
     lines.append("=" * 80)
-    lines.append(
-        f"{'TOTAL':30} | {total_weights:>7} B | {total_biases:>7} B |"
-    )
+    lines.append(f"{'TOTAL':30} | {total_weights:>7} B | {total_biases:>7} B |")
 
     return "\n".join(lines)
 
