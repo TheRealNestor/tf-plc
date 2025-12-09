@@ -187,26 +187,100 @@ def _compute_constants_size(layer: BaseLayer) -> int:
     return 0
 
 
-def _estimate_activation_memory(ir: NetworkIR) -> int:
+def _estimate_activation_memory(
+    ir: NetworkIR, buffer_allocations: Optional[Dict[str, str]] = None
+) -> int:
     """
     Estimate activation memory needed.
 
-    Uses double-buffering estimate: max input size + max output size.
-    This is conservative - actual usage may be lower with buffer reuse.
+    If buffer_allocations provided, use actual buffer reuse.
+    Otherwise, assume separate output variable for each layer.
+
+    Args:
+        ir: Network IR
+        buffer_allocations: Optional dict mapping tensor names to buffer names
+
+    Returns:
+        Activation memory in bytes
     """
-    max_input_bytes = 0
-    max_output_bytes = 0
+    if buffer_allocations:
+        # Calculate actual buffer sizes from allocations
+        buffer_sizes: Dict[str, int] = {}
 
-    for layer in ir.layers.values():
-        input_bytes, output_bytes = _compute_activation_bytes(layer)
-        max_input_bytes = max(max_input_bytes, input_bytes)
-        max_output_bytes = max(max_output_bytes, output_bytes)
+        for layer_name in ir.execution_order:
+            layer = ir.get_layer(layer_name)
 
-    return max_input_bytes + max_output_bytes
+            for output_tensor in layer.outputs:
+                # Skip network outputs (they need their own storage)
+                if output_tensor in ir.output_tensors:
+                    continue
+
+                buffer_name = buffer_allocations.get(output_tensor)
+                if buffer_name:
+                    tensor_bytes = (
+                        _get_element_size(layer.output_type) * layer.output_size
+                    )
+                    buffer_sizes[buffer_name] = max(
+                        buffer_sizes.get(buffer_name, 0), tensor_bytes
+                    )
+
+        # Also account for network inputs/outputs (not in buffer pool)
+        io_bytes = 0
+        for layer in ir.layers.values():
+            for inp in layer.inputs:
+                if inp in ir.input_tensors:
+                    io_bytes = max(
+                        io_bytes, _get_element_size(layer.input_type) * layer.input_size
+                    )
+            for out in layer.outputs:
+                if out in ir.output_tensors:
+                    io_bytes = max(
+                        io_bytes,
+                        _get_element_size(layer.output_type) * layer.output_size,
+                    )
+
+        total_buffer_bytes = sum(buffer_sizes.values())
+        logger.info(
+            f"Activation memory (buffer allocation): {len(buffer_sizes)} buffers = {total_buffer_bytes} bytes, "
+            f"I/O = {io_bytes} bytes, total = {total_buffer_bytes + io_bytes} bytes"
+        )
+        return total_buffer_bytes + io_bytes
+    else:
+        # No buffer allocation: each layer gets its own output variable
+        # Sum all intermediate tensor sizes
+        total_activation_bytes = 0
+
+        for layer in ir.layers.values():
+            # Each layer's output needs storage
+            output_bytes = _get_element_size(layer.output_type) * layer.output_size
+            total_activation_bytes += output_bytes
+
+        # Network input also needs storage
+        input_bytes = 0
+        for layer in ir.layers.values():
+            for inp in layer.inputs:
+                if inp in ir.input_tensors:
+                    input_bytes = max(
+                        input_bytes,
+                        _get_element_size(layer.input_type) * layer.input_size,
+                    )
+                    break
+            if input_bytes > 0:
+                break
+
+        total_activation_bytes += input_bytes
+
+        logger.info(
+            f"Activation memory (no buffer reuse): {len(ir.layers)} layer outputs + input = "
+            f"{total_activation_bytes} bytes"
+        )
+        return total_activation_bytes
 
 
 def analyze_memory(
-    ir: NetworkIR, memory_limit_bytes: int = 96 * 1024
+    ir: NetworkIR,
+    memory_limit_bytes: int = 96 * 1024,
+    buffer_allocations: Optional[Dict[str, str]] = None,
 ) -> MemoryCheckResult:
     """
     Analyze memory requirements for the network IR.
@@ -214,6 +288,7 @@ def analyze_memory(
     Args:
         ir: Network IR (should be after optimization passes)
         memory_limit_bytes: Device memory limit in bytes (default: 96 KB)
+        buffer_allocations: Optional buffer allocations from optimizer
 
     Returns:
         MemoryCheckResult with detailed breakdown
@@ -228,7 +303,7 @@ def analyze_memory(
         breakdown.biases_bytes += layer_biases
         breakdown.constants_bytes += _compute_constants_size(layer)
 
-    breakdown.activations_bytes = _estimate_activation_memory(ir)
+    breakdown.activations_bytes = _estimate_activation_memory(ir, buffer_allocations)
 
     # Validation
     total = breakdown.total_bytes
@@ -267,44 +342,11 @@ def analyze_memory(
     )
 
 
-def get_layer_memory_report(ir: NetworkIR) -> str:
-    """Generate a per-layer memory report."""
-    lines = ["Per-Layer Memory Report", "=" * 80]
-    lines.append(
-        f"{'Layer':30} | {'Weights':>10} | {'Biases':>10} | "
-        f"{'In':>6} | {'Out':>6} | {'dtype'}"
-    )
-    lines.append("-" * 80)
-
-    total_weights = 0
-    total_biases = 0
-
-    for name, layer in ir.layers.items():
-        weights, biases = _compute_layer_weights(layer)
-        total_weights += weights
-        total_biases += biases
-
-        if weights > 0 or biases > 0:
-            weight_dtype = getattr(layer, "weight_type", layer.input_type) or "?"
-            lines.append(
-                f"{name:30} | "
-                f"{weights:>7} B | "
-                f"{biases:>7} B | "
-                f"{layer.input_size:>6} | "
-                f"{layer.output_size:>6} | "
-                f"{weight_dtype}"
-            )
-
-    lines.append("=" * 80)
-    lines.append(f"{'TOTAL':30} | {total_weights:>7} B | {total_biases:>7} B |")
-
-    return "\n".join(lines)
-
-
 def check_memory(
     ir: NetworkIR,
     memory_limit_kb: float = 96,
     fail_on_exceed: bool = True,
+    buffer_allocations: Optional[Dict[str, str]] = None,
 ) -> MemoryCheckResult:
     """
     Check memory requirements and optionally fail if exceeded.
@@ -313,6 +355,7 @@ def check_memory(
         ir: Network IR (post-optimization)
         memory_limit_kb: Memory limit in KB (default: 96)
         fail_on_exceed: Raise exception if memory exceeded
+        buffer_allocations: Optional buffer allocations from optimizer
 
     Returns:
         MemoryCheckResult
@@ -320,7 +363,11 @@ def check_memory(
     Raises:
         MemoryError: If fail_on_exceed=True and model exceeds limit
     """
-    result = analyze_memory(ir, memory_limit_bytes=int(memory_limit_kb * 1024))
+    result = analyze_memory(
+        ir,
+        memory_limit_bytes=int(memory_limit_kb * 1024),
+        buffer_allocations=buffer_allocations,
+    )
 
     logger.info(str(result))
 
