@@ -23,20 +23,29 @@ class TemperaturePredictionModel:
         self.model_path = self.models_dir / f"{model_name}.keras"
 
     def create_model(self):
-        """Create and compile simple feedforward model for real-time temperature classification"""
-        self.model = tf.keras.Sequential(
-            [
-                tf.keras.layers.Flatten(
-                    input_shape=(self.sequence_length, 1)
-                ),  # Flatten the window
-                tf.keras.layers.Dense(16, activation="relu"),
-                tf.keras.layers.Dropout(0.2),
-                tf.keras.layers.Dense(12, activation="relu"),
-                tf.keras.layers.Dropout(0.2),
-                # 3 classes: cold, normal, hot
-                tf.keras.layers.Dense(3, activation="softmax"),
-            ]
-        )
+        """Create a model with residual connections that fits in PLC memory (~96KB)"""
+        inputs = tf.keras.Input(shape=(self.sequence_length, 1))
+
+        x = tf.keras.layers.Flatten()(inputs)
+        x = tf.keras.layers.Dense(32, activation="relu")(x)
+        x = tf.keras.layers.Dense(32, activation="relu")(x)
+
+        residual1 = x
+        x = tf.keras.layers.Dense(32, activation="relu")(x)
+        x = tf.keras.layers.Dense(32)(x)
+        x = tf.keras.layers.Add()([x, residual1])
+        x = tf.keras.layers.Activation("relu")(x)
+
+        residual2 = x
+        x = tf.keras.layers.Dense(32, activation="relu")(x)
+        x = tf.keras.layers.Dense(32)(x)
+        x = tf.keras.layers.Add()([x, residual2])
+        x = tf.keras.layers.Activation("relu")(x)
+
+        x = tf.keras.layers.Dense(16, activation="relu")(x)
+        outputs = tf.keras.layers.Dense(3, activation="softmax")(x)
+
+        self.model = tf.keras.Model(inputs=inputs, outputs=outputs)
         self.model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
             loss="categorical_crossentropy",

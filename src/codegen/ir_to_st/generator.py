@@ -45,6 +45,21 @@ def get_layer_type_name(layer: LinearLayer, activation: ActivationType) -> str:
         return "MatMul"
 
 
+def get_layer_input_vars(layer: BaseLayer, network: NetworkIR) -> List[str]:
+    """Get all input variable names for a layer."""
+    input_vars = []
+
+    for inp_tensor in layer.inputs:
+        if network.is_network_input(inp_tensor):
+            input_vars.append("input_data")
+        elif inp_tensor in network.tensor_producers:
+            producer_name = network.tensor_producers[inp_tensor]
+            producer_layer = network.layers[producer_name]
+            input_vars.append(f"layer_{producer_layer.layer_id}_output")
+
+    return input_vars
+
+
 # Configuration: which activations to inline (vs separate loop)
 INLINE_ACTIVATIONS = {
     ActivationType.NONE,
@@ -515,17 +530,35 @@ def generate_linear_layer_code(
     return builder.build()
 
 
-def generate_add_code(layer: AddLayer, input_var: str, output_var: str) -> STCode:
-    """Generate Add (bias) layer code."""
+def generate_add_code(
+    layer: AddLayer, input_vars: List[str], output_var: str
+) -> STCode:
+    """Generate Add layer code (supports both bias addition and element-wise)."""
     builder = STCodeBuilder()
 
-    builder.add_line(f"(* Layer {layer.layer_id}: Add (Bias) *)")
-    builder.add_line(f"FOR i := 0 TO {layer.output_size-1} DO")
-    with builder.indent():
-        builder.add_line(
-            f"{output_var}[i] := {input_var}[i] + bias_{layer.layer_id}[i];"
-        )
-    builder.add_line("END_FOR;")
+    if layer.bias is not None:
+        # Bias addition: output = input + bias
+        builder.add_line(f"(* Layer {layer.layer_id}: Add (Bias) *)")
+        builder.add_line(f"FOR i := 0 TO {layer.output_size-1} DO")
+        with builder.indent():
+            builder.add_line(
+                f"{output_var}[i] := {input_vars[0]}[i] + bias_{layer.layer_id}[i];"
+            )
+        builder.add_line("END_FOR;")
+    else:
+        # Element-wise addition: output = input1 + input2
+        if len(input_vars) != 2:
+            raise ValueError(
+                f"Element-wise Add layer {layer.layer_id} expected 2 inputs, got {len(input_vars)}"
+            )
+
+        builder.add_line(f"(* Layer {layer.layer_id}: Add (Element-wise) *)")
+        builder.add_line(f"FOR i := 0 TO {layer.output_size-1} DO")
+        with builder.indent():
+            builder.add_line(
+                f"{output_var}[i] := {input_vars[0]}[i] + {input_vars[1]}[i];"
+            )
+        builder.add_line("END_FOR;")
 
     return builder.build()
 
@@ -671,18 +704,24 @@ def generate_dropout_code(
 # Forward Pass Generation
 # ============================================================================
 
+
 # Mapping from layer type to code generator
+def _single_input_wrapper(generator_func):
+    """Wraps a generator function to handle single input layers."""
+    return lambda layer, inputs, output: generator_func(layer, inputs[0], output)
+
+
 LAYER_CODE_GENERATORS = {
-    MatMulLayer: generate_linear_layer_code,
-    GemmLayer: generate_linear_layer_code,
-    FusedGemmLayer: generate_linear_layer_code,
-    FusedLinearLayer: generate_linear_layer_code,
+    MatMulLayer: _single_input_wrapper(generate_linear_layer_code),
+    GemmLayer: _single_input_wrapper(generate_linear_layer_code),
+    FusedGemmLayer: _single_input_wrapper(generate_linear_layer_code),
+    FusedLinearLayer: _single_input_wrapper(generate_linear_layer_code),
     AddLayer: generate_add_code,
-    ReshapeLayer: generate_reshape_code,
-    ActivationLayer: generate_activation_layer_code,
-    QuantizeLinearLayer: generate_quantize_linear_code,
-    DequantizeLinearLayer: generate_dequantize_linear_code,
-    DropoutLayer: generate_dropout_code,
+    ReshapeLayer: _single_input_wrapper(generate_reshape_code),
+    ActivationLayer: _single_input_wrapper(generate_activation_layer_code),
+    QuantizeLinearLayer: _single_input_wrapper(generate_quantize_linear_code),
+    DequantizeLinearLayer: _single_input_wrapper(generate_dequantize_linear_code),
+    DropoutLayer: _single_input_wrapper(generate_dropout_code),
 }
 
 
@@ -692,32 +731,8 @@ def generate_forward_pass(network: NetworkIR) -> STCode:
     for layer_name in network.execution_order:
         layer = network.layers[layer_name]
 
-        # Determine input variable name
-        if len(layer.inputs) == 1:
-            input_tensor = layer.inputs[0]
-            if network.is_network_input(input_tensor):
-                input_var = "input_data"
-            else:
-                producer_layer_name = network.tensor_producers[input_tensor]
-                producer_layer = network.layers[producer_layer_name]
-                input_var = f"layer_{producer_layer.layer_id}_output"
-        else:
-            # For layers with multiple inputs, use the first non-weight input
-            input_var = None
-            for inp_tensor in layer.inputs:
-                if network.is_network_input(inp_tensor):
-                    input_var = "input_data"
-                    break
-                elif inp_tensor in network.tensor_producers:
-                    producer_layer_name = network.tensor_producers[inp_tensor]
-                    producer_layer = network.layers[producer_layer_name]
-                    input_var = f"layer_{producer_layer.layer_id}_output"
-                    break
-
-            if input_var is None:
-                raise ValueError(
-                    f"Cannot determine input variable for layer {layer_name}"
-                )
+        # Get all input variables (handles multiple inputs properly)
+        input_vars = get_layer_input_vars(layer, network)
 
         # Determine output variable name
         output_tensor = layer.outputs[0]
@@ -729,7 +744,9 @@ def generate_forward_pass(network: NetworkIR) -> STCode:
         # Generate code for this layer
         layer_type = type(layer)
         if layer_type in LAYER_CODE_GENERATORS:
-            layer_code = LAYER_CODE_GENERATORS[layer_type](layer, input_var, output_var)
+            layer_code = LAYER_CODE_GENERATORS[layer_type](
+                layer, input_vars, output_var
+            )
             code += layer_code
             code += STCode.blank_line()
         else:

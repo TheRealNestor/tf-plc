@@ -28,7 +28,7 @@ DEFAULT_PASSES: List[OptimizationPass] = [
     RemoveNoOpReshapePass(),
     RemoveRedundantQuantPairPass(),
     FuseLinearActivationPass(),
-    BufferAllocationPass(),
+    # BufferAllocationPass(),
 ]
 
 
@@ -118,7 +118,7 @@ class IROptimizer:
     def _rebuild_graph_structure(self, layers: dict) -> tuple[dict, dict]:
         """
         Rebuild tensor producer/consumer maps.
-        
+
         Returns:
             (tensor_producers, tensor_consumers) tuple
         """
@@ -145,7 +145,7 @@ class IROptimizer:
 
     def _rebuild_ir(self, removed_layers: set, tensor_mapping: dict) -> NetworkIR:
         """Rebuild IR with removed layers and rewired tensors.
-        
+
         Args:
             removed_layers: Set of layer names to remove.
             tensor_mapping: Dict mapping old tensor names to new tensor names.
@@ -166,7 +166,9 @@ class IROptimizer:
         new_output_tensors = self._remap_network_outputs(tensor_mapping)
 
         # 4. Rebuild graph structure
-        new_tensor_producers, new_tensor_consumers = self._rebuild_graph_structure(new_layers)
+        new_tensor_producers, new_tensor_consumers = self._rebuild_graph_structure(
+            new_layers
+        )
 
         # 5. Rebuild execution order
         new_execution_order = topological_sort(

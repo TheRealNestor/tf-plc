@@ -120,7 +120,6 @@ class AddLayer(BaseLayer):
 class ReshapeLayer(BaseLayer):
     """Represents an ONNX Reshape layer"""
 
-    # I think we have enough information from baselayer to define the reshape layer
     pass
 
 

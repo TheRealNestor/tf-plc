@@ -47,6 +47,7 @@ class BufferAllocationPass(OptimizationPass):
         liveness = self._compute_liveness(ir)
         interference = self._build_interference_graph(liveness)
         self._color_graph(ir, interference)
+        self._apply_allocations_to_ir()
 
     def _compute_liveness(self, ir: NetworkIR) -> Dict[str, tuple]:
         """
@@ -81,7 +82,7 @@ class BufferAllocationPass(OptimizationPass):
         self, liveness: Dict[str, tuple]
     ) -> Dict[str, Set[str]]:
         """Build graph of tensors that are live at the same time.
-        Args:   
+        Args:
             liveness: Dict mapping tensor names to (start, end) indices
         Returns:
             Dict mapping tensor names to sets of interfering tensor names
@@ -159,4 +160,23 @@ class BufferAllocationPass(OptimizationPass):
 
         logger.info(
             f"Buffer allocation: {len(buffer_colors)} tensors -> {len(buffer_sizes)} buffers"
+        )
+
+    def _apply_allocations_to_ir(self) -> None:
+        """
+        Populate tensor remappings to use the found shared buffers.
+
+        The actual IR modification happens later in optimizer._rebuild_ir(),
+        which reads self.tensor_mapping and applies the remappings.
+        """
+
+        for old_tensor, allocation in self.buffer_assignments.items():
+            buffer_name = allocation.buffer_name
+            self.remap_tensor(old_tensor, buffer_name)
+
+            logger.debug(f"Remapped tensor {old_tensor} to buffer {buffer_name}")
+
+        logger.info(
+            f"Remapped {len(self.buffer_assignments)} tensors to "
+            f"{len(set(allocation.buffer_name for allocation in self.buffer_assignments.values()))} buffers"
         )

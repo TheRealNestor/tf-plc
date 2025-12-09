@@ -47,12 +47,18 @@ def extract_activation_layer(
 
 
 def extract_add_layer(layer: Dict, layer_id: int, analyzer: ONNXModel) -> AddLayer:
-    """Extract Add layer."""
+    """Extract Add layer (element-wise addition with optional constant)."""
     inputs = layer["resolved_inputs"]
     outputs = layer["resolved_outputs"]
 
-    if not inputs[1].is_weight or inputs[1].value is None:
-        raise ValueError(f"Add layer {layer_id} missing bias weight")
+    # Check if second input is a constant (bias/weight)
+    bias = inputs[1].value if inputs[1].is_weight else None
+
+    # For bias addition, only pass the tensor input
+    # For element-wise, pass both tensor inputs
+    layer_inputs = (
+        (inputs[0].name,) if bias is not None else tuple(t.name for t in inputs)
+    )
 
     return AddLayer(
         layer_id=layer_id,
@@ -60,13 +66,13 @@ def extract_add_layer(layer: Dict, layer_id: int, analyzer: ONNXModel) -> AddLay
         op_type=layer["op_type"],
         input_size=inputs[0].size,
         output_size=outputs[0].size,
-        inputs=tuple(t.name for t in inputs),
+        inputs=layer_inputs,
         outputs=tuple(t.name for t in outputs),
         input_shape=inputs[0].shape,
         output_shape=outputs[0].shape,
         input_type=inputs[0].dtype,
         output_type=outputs[0].dtype,
-        bias=inputs[1].value,
+        bias=bias,  # None for element-wise, array for bias addition
     )
 
 
