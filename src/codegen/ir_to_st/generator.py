@@ -722,10 +722,7 @@ def generate_dropout_code(
 
     At inference time, Dropout is an identity operation.
     """
-
-    builder = STCodeBuilder()
-    builder.add_line(f"(* Layer {layer.layer_id}: Dropout (identity at inference) *)")
-    return builder.build()
+    pass
 
 
 # ============================================================================

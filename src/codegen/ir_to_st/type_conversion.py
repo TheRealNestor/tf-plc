@@ -90,16 +90,6 @@ def numpy_to_plc_cast_func(np_dtype: np.dtype, target_plc_type: str) -> str:
     return get_conversion_func(source_type, target_plc_type)
 
 
-def get_accumulator_type(dtype: np.dtype) -> str:
-    """Get appropriate accumulator type for quantized operations."""
-    if dtype in [np.int8, np.uint8]:
-        return "DINT"  # 32-bit accumulator for 8-bit
-    elif dtype in [np.int16, np.uint16]:
-        return "LINT"  # 64-bit accumulator for 16-bit
-    else:
-        return "REAL"
-
-
 def get_type_limits(dtype: np.dtype) -> Tuple[int, int]:
     """Get min/max values for a dtype."""
     plc_type = numpy_to_plc_type(dtype)

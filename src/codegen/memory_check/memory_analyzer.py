@@ -22,20 +22,7 @@ from ..types import (
 
 logger = logging.getLogger(__name__)
 
-# Map dtype strings to sizes in bytes
-DTYPE_SIZES: Dict[str, int] = {
-    "float32": 4,
-    "float64": 8,
-    "int8": 1,
-    "uint8": 1,
-    "int16": 2,
-    "int32": 4,
-    "int64": 8,
-}
-
-DEFAULT_ELEMENT_SIZE = 4  # REAL (float32)
-
-# TODO: Make elegant and unified way of handling dtype sizes for the different formats
+DEFAULT_ELEMENT_SIZE = 4  # bytes (float32)
 
 
 @dataclass
@@ -112,7 +99,6 @@ def _compute_layer_weights(layer: BaseLayer) -> Tuple[int, int]:
 
     # Linear layers (MatMul, Gemm, Fused variants)
     if isinstance(layer, (MatMulLayer, GemmLayer, FusedGemmLayer, FusedLinearLayer)):
-        # Get weight dtype from layer if available
         weight_dtype = getattr(layer, "weight_type", None) or layer.input_type
         weight_element_size = _get_element_size(weight_dtype)
 
@@ -161,13 +147,6 @@ def _compute_layer_weights(layer: BaseLayer) -> Tuple[int, int]:
             biases_bytes = layer.output_size * element_size
 
     return weights_bytes, biases_bytes
-
-
-def _compute_activation_bytes(layer: BaseLayer) -> Tuple[int, int]:
-    """Compute input and output activation sizes in bytes."""
-    input_size = _get_element_size(layer.input_type) * layer.input_size
-    output_size = _get_element_size(layer.output_type) * layer.output_size
-    return input_size, output_size
 
 
 def _compute_constants_size(layer: BaseLayer) -> int:
