@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
+import argparse
 
 
 class TemperaturePredictionModel:
@@ -421,27 +422,39 @@ def main():
     print("Temperature Prediction System")
     print("=" * 40)
 
-    available_models = TemperaturePredictionModel.list_available_models()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-s", type=int)
+    parser.add_argument("name")
+    args = parser.parse_args()
+    name = args.name
+    seq_length = args.s
 
-    # Let user choose to train new model or load existing one
-    if available_models:
-        choice = input("\nTrain new model? (y/n): ").lower().strip()
-        if choice == "y":
-            model_name = input(
-                "Enter model name (or press Enter for auto-generated): "
-            ).strip()
-            model = TemperaturePredictionModel(
-                model_name=model_name if model_name else None
-            )
-        else:
-            # Use the most recent model (last in alphabetical order usually means most recent)
-            latest_model = sorted(available_models)[-1]
-            model = TemperaturePredictionModel(model_name=latest_model)
-            if not model.load_model():
-                print("Failed to load model, creating new one...")
-                model = TemperaturePredictionModel()
+    # available_models = TemperaturePredictionModel.list_available_models()
+
+    # # Let user choose to train new model or load existing one
+    # if available_models:
+    #     choice = input("\nTrain new model? (y/n): ").lower().strip()
+    #     if choice == "y":
+    #         model_name = input(
+    #             "Enter model name (or press Enter for auto-generated): "
+    #         ).strip()
+    #         model = TemperaturePredictionModel(
+    #             model_name=model_name if model_name else None
+    #         )
+    #     else:
+    #         # Use the most recent model (last in alphabetical order usually means most recent)
+    #         latest_model = sorted(available_models)[-1]
+    #         model = TemperaturePredictionModel(model_name=latest_model)
+    #         if not model.load_model():
+    #             print("Failed to load model, creating new one...")
+    #             model = TemperaturePredictionModel()
+    # else:
+    #     model = TemperaturePredictionModel()
+
+    if not seq_length:
+        model = TemperaturePredictionModel(model_name=name)
     else:
-        model = TemperaturePredictionModel()
+        model = TemperaturePredictionModel(sequence_length=seq_length, model_name=name)
 
     # Train or load model
     if not hasattr(model, "model") or model.model is None:
