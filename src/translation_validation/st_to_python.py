@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Tuple, List
 
 # Update import path based on your project structure
-from translation_validation.python_builder import PyCodeBuilder
+from python_builder import PyCodeBuilder
 
 
 def translate_st_to_python(st_code: str) -> Tuple[str, str]:

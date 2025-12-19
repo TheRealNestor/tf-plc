@@ -1,4 +1,4 @@
-from .st_to_python import translate_st_to_python
+from st_to_python import translate_st_to_python
 from pathlib import Path
 import numpy as np
 import importlib.util
@@ -178,7 +178,7 @@ def validate_translation(
     Full validation pipeline: translate ST, load model, compare outputs.
     """
     if save_dir is None:
-        save_dir = Path("src/translation-validation/tmp")
+        save_dir = Path("src/translation_validation/tmp")
 
     save_file = save_dir / f"{st_file.stem}.py"
 
@@ -228,8 +228,9 @@ def generate_test_inputs(
 
 
 def main():
+    file_name = "test4_531k"
     st_dir = Path("examples/models/structured_text")
-    st_file = st_dir / "local_model2.st"
+    st_file = st_dir / f"{file_name}.st"
 
     save_dir = Path("src/translation_validation/tmp")
 
@@ -237,7 +238,7 @@ def main():
     print(f"Translated function: {func_name}")
 
     # Use ONNX model instead of Keras
-    onnx_model_file = Path("examples/models/onnx/local_model2.onnx")
+    onnx_model_file = Path(f"examples/models/onnx/{file_name}.onnx")
 
     # Generate synthetic test inputs
     test_inputs = generate_test_inputs(num_samples=100, input_size=5)
