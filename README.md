@@ -49,10 +49,3 @@ pip install -e .
 - Only simple feedforward networks such as MLPs have been tested and are fully supported. The underlying IR design is easily extended to other types of networks.
 - Check logs for unsupported operators or errors
 
-## Contributing
-
-Open issues for unsupported models or bugs. Pull requests welcome.
-
-## License
-
-See LICENSE in the project root.
