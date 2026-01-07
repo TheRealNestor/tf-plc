@@ -1,4 +1,4 @@
-# tf-plc
+# ml2plc
 
 Tool suite for converting ONNX neural network models to IEC 61131-3 Structured Text (ST) for PLCs.
 
