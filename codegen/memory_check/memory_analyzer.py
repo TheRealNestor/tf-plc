@@ -201,9 +201,6 @@ def _compute_constants_size(layer: BaseLayer) -> int:
 def _estimate_activation_memory(ir: NetworkIR) -> int:
     """
     Estimate activation memory needed.
-
-    Uses double-buffering estimate: max input size + max output size.
-    This is conservative - actual usage may be lower with buffer reuse.
     """
     max_input_bytes = 0
     max_output_bytes = 0

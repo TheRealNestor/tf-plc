@@ -1,64 +1,58 @@
 # tf-plc
 
-Tools to inspect ONNX neural networks and translate simple feed‑forward networks into PLC Structured Text (IEC 61131-3).
+Tool suite for converting ONNX neural network models to IEC 61131-3 Structured Text (ST) for PLCs.
 
-## Overview
+## Features
 
-This project contains utilities to:
-- Inspect and summarize ONNX models (weights, layers, inputs/outputs).
-- Generate Structured Text (ST) code that implements a simple feedforward neural network (ReLU activations) from an ONNX model.
+- Inspect and summarize ONNX models (weights, layers, inputs/outputs)
+- Convert ONNX models to intermediate representation (IR)
+- Generate Structured Text code for feedforward neural networks
+- Validate translation by converting ST code back to Python and comparing outputs
 
-## Key files
+## Usage
 
-- `onnx_model.py`  
-  - Provides `ONNXModel` class to load and analyze ONNX files.
-  - Main capabilities:
-    - load_model(): validate and load an ONNX model.
-    - extract_weights(): extract initializers (weights/biases) as numpy arrays.
-    - analyze_layers(): enumerate nodes, inputs/outputs and extract attributes.
-    - get_input_output_info(): report model input/output shapes and dtypes.
-    - print_model_summary(): prints a full model summary to stdout.
-  - CLI usage (examples):
-    - Analyze default model (first `.onnx` in `models/onnx`):
-      python onnx_model.py
-    - Analyze a specific model by name (without .onnx):
-      python onnx_model.py my_model
-  - Output: human-readable model summary printed to the console; `ONNXModel` instance exposes `weights`, `layers`, `input_info`, `output_info` for programmatic use.
+1. Place ONNX models in `examples/models/onnx/`
+2. Run the main compiler:
 
-- `st_code_generator.py` (translator / generator)  
-  - Translates supported ONNX graphs (simple feedforward with ReLU) into PLC Structured Text.
-  - Typical usage:
-      python st_code_generator.py path/to/model.onnx --out-dir generated_st
-  - Output: ST source files (Function Blocks / Programs) that represent the network topology and parameter arrays.
-  - Limitations: Designed for simple feedforward networks; many ONNX ops and dynamic graph constructs may not be supported. Review generated ST before deploying.
+   ```
+   python src/codegen/main.py examples/models/onnx/your_model.onnx
+   ```
+
+   This generates ST code from the ONNX model.
+
+3. Optional: Validate translation (was used to ensure correctness of the code generator)
+   ```
+   python src/translation_validation/validation.py path/to/generated.st path/to/save.py
+   ```
 
 ## Installation
 
-1. Create and activate a Python virtual environment (Windows example):
-   python -m venv .venv
-   .venv\Scripts\activate
+**Windows:**
 
-2. Install project
-    - As editable (developer mode): `pip install -e .`
-    - Normal install: `pip install .`
+```sh
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e .
+```
 
-## Usage tips
+**Linux/macOS:**
 
-- Place ONNX models in `models/onnx/` (the `onnx_model.py` CLI looks there by default).
-- Use `onnx_model.py` to inspect the model before generating code to verify supported operators and shapes.
-- Run `st_code_generator.py` after inspection to produce Structured Text.
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
 
 ## Troubleshooting
 
-- "Model file not found" — ensure the file path is correct and the `.onnx` file exists.
-- ONNX checker errors — the model may be invalid or contain unsupported ops; try exporting a simpler model.
-- Generation issues — examine printed layer info and attributes to find unsupported operators.
+- Ensure ONNX files exist and are valid
+- Only simple feedforward networks such as MLPs have been tested and are fully supported. The underlying IR design is easily extended to other types of networks.
+- Check logs for unsupported operators or errors
 
 ## Contributing
 
-- Open an issue with a minimal reproducible ONNX model if the generator fails on a simple feedforward net.
-- Pull requests adding op support or improving codegen are welcome.
+Open issues for unsupported models or bugs. Pull requests welcome.
 
-## License & Contact
+## License
 
-- Check project root for a LICENSE file. For questions, open an issue in the repository.
+See LICENSE in the project root.
